@@ -17,6 +17,9 @@ class OrchestratorAgent:
             elif agent_name == "embedding":
                 from backend.agents.embedding_agent import EmbeddingAgent
                 self._agents[agent_name] = EmbeddingAgent()
+            elif agent_name == "chunking":
+                from backend.agents.chunking_agent import ChunkingAgent
+                self._agents[agent_name] = ChunkingAgent()
             elif agent_name == "multimodal_search":
                 from backend.agents.multimodal_search_agent import MultimodalSearchAgent
                 self._agents[agent_name] = MultimodalSearchAgent()
@@ -35,6 +38,9 @@ class OrchestratorAgent:
             elif agent_name == "bio_rag":
                 from backend.agents.bio_rag_agent import BioRAGAgent
                 self._agents[agent_name] = BioRAGAgent()
+            elif agent_name == "evidence":
+                from backend.agents.evidence_agent import EvidenceAgent
+                self._agents[agent_name] = EvidenceAgent()
         return self._agents.get(agent_name)
     async def process_request(self, user_input: Dict[str, Any]) -> Dict[str, Any]:
         intent = await self._analyze_intent(user_input)
@@ -69,6 +75,7 @@ class OrchestratorAgent:
             ],
             "search_rag": [
                 "multimodal_search",
+                "chunking",
                 "similarity",
                 "reranking",
                 "bio_rag",
@@ -82,10 +89,18 @@ class OrchestratorAgent:
             ],
             "upload_experiment": [
                 "ingestion",
+                "chunking",
                 "embedding"
             ],
             "analyze_failure": [
                 "similarity",
+                "failure",
+                "evidence"
+            ],
+            "search_experiments": [
+                "multimodal_search",
+                "similarity",
+                "reranking",
                 "failure",
                 "evidence"
             ]

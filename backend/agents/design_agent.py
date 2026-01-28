@@ -21,7 +21,7 @@ class DesignAgent:
                 failures
             )
         except Exception as e:
-            print(f"⚠️ Gemini generation failed: {e}")
+            print(f"Gemini generation failed: {e}")
             variants = self._generate_basic_variants(successful_neighbors)
         justified_variants = self._add_justifications(
             variants,
@@ -70,7 +70,7 @@ class DesignAgent:
                 })
             return normalized
         except Exception as e:
-            print(f"⚠️ Failed to parse Gemini response: {e}")
+            print(f" Failed to parse Gemini response: {e}")
             return []
     def _generate_basic_variants(self, experiments: List[Dict]) -> List[Dict]:
         if not experiments:

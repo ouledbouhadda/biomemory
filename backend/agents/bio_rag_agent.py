@@ -11,7 +11,10 @@ class BioRAGAgent:
         self.rag_service = get_bio_rag_service()
     async def _find_similar_experiments(self, query_embedding: List[float], limit: int) -> List[Dict]:
         try:
-            collection_name = "private_experiments"
+            collection_name = "public_science"
+            if hasattr(query_embedding, 'tolist'):
+                query_embedding = query_embedding.tolist()
+            print(f"Recherche dans collection '{collection_name}' avec vecteur de dimension {len(query_embedding)}")
             search_results = await self.qdrant_service.search(
                 collection_name=collection_name,
                 query_vector=query_embedding,
@@ -19,21 +22,23 @@ class BioRAGAgent:
                 score_threshold=0.1
             )
             if search_results and len(search_results) > 0:
-                print(f"Trouvé {len(search_results)} expériences similaires dans Qdrant")
+                print(f"Trouvé {len(search_results)} expériences similaires dans Qdrant Cloud")
                 return search_results
             search_results = await self.qdrant_service.search(
                 collection_name=collection_name,
                 query_vector=query_embedding,
                 limit=limit,
-                score_threshold=0.05
+                score_threshold=0.0
             )
             if search_results and len(search_results) > 0:
-                print(f"Trouvé {len(search_results)} expériences similaires (seuil bas) dans Qdrant")
+                print(f"Trouvé {len(search_results)} expériences similaires (sans seuil) dans Qdrant Cloud")
                 return search_results
-            print("Aucune expérience trouvée dans Qdrant, utilisation du fallback")
+            print("Aucune expérience trouvée dans Qdrant Cloud, utilisation du fallback")
             return await self._get_mock_experiments(limit)
         except Exception as e:
-            print(f"Qdrant search failed: {e}")
+            print(f"Qdrant Cloud search failed: {e}")
+            import traceback
+            traceback.print_exc()
             print("Utilisation des données mockées comme fallback")
             return await self._get_mock_experiments(limit)
     async def _get_mock_experiments(self, limit: int) -> List[Dict]:
@@ -161,16 +166,45 @@ class BioRAGAgent:
         phs = []
         organisms = []
         successes = []
+        assays = []
+
         for exp in experiments:
             payload = exp.get('payload', {})
+
+
+            organism = payload.get('organism')
+            temperature = payload.get('temperature')
+            assay = payload.get('assay')
+
+
             conditions = payload.get('conditions', {})
-            if conditions.get('temperature') is not None:
-                temperatures.append(conditions['temperature'])
+            if not organism:
+                organism = conditions.get('organism')
+            if not temperature:
+                temperature = conditions.get('temperature')
+
+
+            if temperature is not None:
+                if isinstance(temperature, str):
+
+                    import re
+                    temp_match = re.search(r'(\d+(?:\.\d+)?)', str(temperature))
+                    if temp_match:
+                        temperatures.append(float(temp_match.group(1)))
+                elif isinstance(temperature, (int, float)):
+                    temperatures.append(float(temperature))
+
             if conditions.get('ph') is not None:
                 phs.append(conditions['ph'])
-            if conditions.get('organism'):
-                organisms.append(conditions['organism'])
-            success = payload.get('success', payload.get('outcome', {}).get('status') == 'success')
+
+            if organism:
+                organisms.append(organism)
+
+            if assay:
+                assays.append(assay)
+
+
+            success = payload.get('success', True)
             successes.append(success)
         analysis = {
             'optimal_conditions': {},
@@ -201,21 +235,29 @@ class BioRAGAgent:
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         user_input = context.get('user_input', {})
         query = user_input.get('query', {})
+
+
+        chunks = context.get('chunks', [])
+        chunking_applied = context.get('chunking_applied', False)
+
         if not query:
             return {
                 'rag_response': None,
                 'rag_error': 'Missing query'
             }
+
         try:
             multimodal_result = await self.multimodal_agent.execute({
                 'user_input': {'query': query}
             })
             query_embedding = multimodal_result.get('query_embedding')
+
             if query_embedding is None or (hasattr(query_embedding, '__len__') and len(query_embedding) == 0):
                 return {
                     'rag_response': None,
                     'rag_error': 'Failed to generate query embedding'
                 }
+
             if len(query_embedding) > 488:
                 query_text = query.get('text', '')
                 conditions = query.get('conditions', {})
@@ -224,28 +266,101 @@ class BioRAGAgent:
                     conditions=conditions,
                     include_image=False
                 )
+
             limit = query.get('limit', 15)
-            similar_experiments = await self._find_similar_experiments(query_embedding, limit)
+
+
+            if chunking_applied and chunks:
+                similar_experiments = await self._find_similar_chunks(query_embedding, limit)
+                rag_method = 'chunked_rag'
+                print(f" Chonkie RAG: recherche sur {len(chunks)} chunks contextuels")
+            else:
+                similar_experiments = await self._find_similar_experiments(query_embedding, limit)
+                rag_method = 'similarity_rag'
+
             if not similar_experiments:
                 return {
                     'rag_response': f"Aucune expérience similaire trouvée pour votre requête : '{query.get('text', '')}'. Essayez de reformuler ou d'ajouter plus de détails.",
                     'similar_experiments_count': 0,
-                    'rag_method': 'similarity_based'
+                    'rag_method': rag_method
                 }
+
             rag_response = await self._generate_rag_response(query, similar_experiments)
+
             return {
                 'rag_response': rag_response,
                 'similar_experiments_count': len(similar_experiments),
                 'similar_experiments': similar_experiments[:5],
-                'rag_method': 'similarity_rag',
-                'modalities_detected': multimodal_result.get('modalities_used', {})
+                'rag_method': rag_method,
+                'modalities_detected': multimodal_result.get('modalities_used', {}),
+                'chunking_used': chunking_applied,
+                'chunks_count': len(chunks) if chunking_applied else 0
             }
+
         except Exception as e:
             print(f"BioRAG Agent failed: {e}")
             return {
                 'rag_response': None,
                 'rag_error': str(e)
             }
+
+    async def _find_similar_chunks(self, query_embedding: List[float], limit: int) -> List[Dict]:
+        """
+        Recherche des chunks similaires (documents chunkés avec Chonkie).
+        Permet une recherche plus fine sur des passages spécifiques.
+        """
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+
+            chunk_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="chunked",
+                        match=MatchValue(value=True)
+                    )
+                ],
+                must_not=[
+                    FieldCondition(
+                        key="is_parent",
+                        match=MatchValue(value=True)
+                    )
+                ]
+            )
+
+
+            chunk_results = await self.qdrant_service.search(
+                collection_name="private_experiments",
+                query_vector=query_embedding,
+                limit=limit * 2,
+                query_filter=chunk_filter,
+                score_threshold=0.1
+            )
+
+            if chunk_results:
+                print(f" Chonkie: Trouvé {len(chunk_results)} chunks similaires")
+
+
+                seen_parents = set()
+                deduplicated = []
+                for chunk in chunk_results:
+                    parent_id = chunk.get('payload', {}).get('parent_id')
+                    if parent_id not in seen_parents:
+                        seen_parents.add(parent_id)
+                        deduplicated.append(chunk)
+                    elif len([c for c in deduplicated if c.get('payload', {}).get('parent_id') == parent_id]) < 2:
+
+                        deduplicated.append(chunk)
+
+                return deduplicated[:limit]
+
+
+            print(" Pas de chunks trouvés, fallback vers recherche classique")
+            return await self._find_similar_experiments(query_embedding, limit)
+
+        except Exception as e:
+            print(f" Chunk search failed: {e}, fallback vers recherche classique")
+            return await self._find_similar_experiments(query_embedding, limit)
     async def find_similar_experiments(self, experiment: Dict, limit: int = 5) -> List[Dict]:
         try:
             experiment_id = experiment.get('id')

@@ -91,7 +91,13 @@ export default function SimilarExperiments({ results }) {
               {exp.publication && (
                 <div style={styles.publication}>
                   <ExternalLink size={14} />
-                  {exp.publication}
+                  {exp.publication.reference ? (
+                    <a href={exp.publication.reference} target="_blank" rel="noopener noreferrer">
+                      {exp.publication.title || 'View Publication'}
+                    </a>
+                  ) : (
+                    <span>{exp.publication.title || 'Publication'}</span>
+                  )}
                 </div>
               )}
             </div>

@@ -102,20 +102,20 @@ class FailureAgent:
         recommendations = []
         if risk_level == "HIGH":
             recommendations.append(
-                "⚠️ High reproducibility risk detected. "
+                "High reproducibility risk detected. "
                 "Consider additional replicates and controls."
             )
         common_orgs = failure_patterns.get('common_organisms', {})
         if common_orgs:
             most_common = max(common_orgs.items(), key=lambda x: x[1])
             recommendations.append(
-                f"⚠️ Multiple failures observed with {most_common[0]} "
+                f"Multiple failures observed with {most_common[0]} "
                 f"({most_common[1]} cases). Consider alternative organism."
             )
         temp_range = failure_patterns.get('temperature_range', {})
         if temp_range and temp_range.get('min') is not None:
             recommendations.append(
-                f"ℹ️ Failed experiments temperature range: "
+                f"Failed experiments temperature range: "
                 f"{temp_range['min']:.1f}°C - {temp_range['max']:.1f}°C. "
                 f"Consider adjusting temperature."
             )

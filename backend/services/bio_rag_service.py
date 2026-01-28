@@ -24,7 +24,7 @@ class BioRAGService:
                 device_map="auto"
             )
         except Exception as e:
-            print(f"⚠️ Failed to load BioRAG models: {e}")
+            print(f" Failed to load BioRAG models: {e}")
             self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
     async def search_and_generate(
         self,
@@ -64,7 +64,7 @@ class BioRAGService:
                 response = response.split("Answer:")[1].strip()
             return response
         except Exception as e:
-            print(f"⚠️ BioRAG generation failed: {e}")
+            print(f" BioRAG generation failed: {e}")
             return f"Based on similar experiments, I cannot provide a definitive answer due to technical issues. However, the retrieved experiments may contain relevant information."
     def _calculate_confidence(self, response: str, experiments: List[Dict]) -> float:
         if not experiments:

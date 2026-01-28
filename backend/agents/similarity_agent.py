@@ -1,6 +1,14 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from backend.services.qdrant_service import get_qdrant_service
-from qdrant_client.models import Filter, FieldCondition, MatchValue, Range, MatchText
+from qdrant_client.models import (
+    Filter, FieldCondition, MatchValue, Range, MatchText, MatchAny,
+    HasIdCondition, IsEmptyCondition, IsNullCondition,
+    DatetimeRange, OrderBy, Fusion, ContextExamplePair
+)
+from datetime import datetime, timedelta
+import asyncio
+
+
 class SimilarityAgent:
     def __init__(self):
         self.qdrant = get_qdrant_service()
@@ -51,9 +59,9 @@ class SimilarityAgent:
                 fusion=Fusion.RRF
             )
             if hybrid_results:
-                print(f"✅ Recherche hybride réussie: {len(hybrid_results)} résultats")
+                print(f"Hybrid search succeeded: {len(hybrid_results)} results")
                 return hybrid_results
-            print("ℹ️ Fallback vers recherche vectorielle seule")
+            print("Fallback to vector search only")
             return self.qdrant.search_sync(
                 collection_name=collection_name,
                 query_vector=query_vector,
@@ -61,7 +69,7 @@ class SimilarityAgent:
                 query_filter=filter_conditions
             )
         except Exception as e:
-            print(f"⚠️ Recherche hybride échouée: {e}, fallback vers recherche basique")
+            print(f"Hybrid search failed: {e}, fallback to basic search")
             return self.qdrant.search_sync(
                 collection_name=collection_name,
                 query_vector=query_vector,
@@ -126,7 +134,7 @@ class SimilarityAgent:
             )
             results.extend(private_results)
         public_results = self._search_with_hybrid_ranking(
-            "public_experiments", query_vector, "", limit, contextual_filter
+            "public_science", query_vector, "", limit, contextual_filter
         )
         results.extend(public_results)
         merged_results = self._merge_results_advanced(results, limit)
@@ -173,7 +181,7 @@ class SimilarityAgent:
         try:
             if query_context.get("group_by"):
                 grouped_results = self.qdrant.search_with_grouping(
-                    collection_name="public_experiments",
+                    collection_name="public_science",
                     query_vector=query_vector,
                     group_by=query_context["group_by"],
                     limit=limit,
@@ -185,7 +193,7 @@ class SimilarityAgent:
                     results.extend(group_results)
             elif query_context.get("date_range"):
                 results = self.qdrant.search_temporal(
-                    collection_name="public_experiments",
+                    collection_name="public_science",
                     query_vector=query_vector,
                     date_range=query_context["date_range"],
                     limit=limit * 2,
@@ -193,7 +201,7 @@ class SimilarityAgent:
                 )
             elif query_text and query_text.strip():
                 results = self.qdrant.hybrid_search(
-                    collection_name="public_experiments",
+                    collection_name="public_science",
                     query_vector=query_vector,
                     query_text=query_text,
                     limit=limit * 2,
@@ -201,7 +209,7 @@ class SimilarityAgent:
                 )
             else:
                 results = self.qdrant.search_sync(
-                    collection_name="public_experiments",
+                    collection_name="public_science",
                     query_vector=query_vector,
                     limit=limit * 2,
                     query_filter=filter_conditions
@@ -422,7 +430,7 @@ class SimilarityAgent:
             )
             return results
         except Exception as e:
-            print(f"⚠️ Private search failed: {e}")
+            print(f" Private search failed: {e}")
             return []
     async def _search_cloud(
         self,
@@ -431,21 +439,28 @@ class SimilarityAgent:
         limit: int,
         threshold: float
     ) -> List[Dict]:
-        if not self.qdrant.cloud_client:
-            return []
+        print(f" _search_cloud: cloud_client exists = {self.qdrant.cloud_client is not None}")
+
+
         try:
+            query_vector = embedding.tolist() if hasattr(embedding, 'tolist') else embedding
+            print(f" Cloud search: vector_dim={len(query_vector)}, limit={limit}, threshold={threshold}")
+
             metadata_filter = self.qdrant.build_metadata_filter(conditions)
             results = await self.qdrant.search(
                 collection_name="public_science",
-                query_vector=embedding.tolist() if hasattr(embedding, 'tolist') else embedding,
+                query_vector=query_vector,
                 limit=limit,
                 query_filter=metadata_filter,
                 with_payload=True,
                 score_threshold=threshold if threshold > 0 else None
             )
+            print(f" Cloud search returned {len(results)} results")
             return results
         except Exception as e:
-            print(f"⚠️ Cloud search failed: {e}")
+            print(f" Cloud search failed: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     def _merge_results(
         self,
@@ -474,7 +489,7 @@ class SimilarityAgent:
                 score_threshold=0.1
             )
             if recommendations:
-                print(f"✅ Recommandations générées: {len(recommendations)} expériences")
+                print(f" Recommandations générées: {len(recommendations)} expériences")
                 return recommendations
             print("ℹ️ Fallback vers recommandations dans données publiques")
             return self.qdrant.recommend(
@@ -486,7 +501,7 @@ class SimilarityAgent:
                 score_threshold=0.1
             )
         except Exception as e:
-            print(f"⚠️ Recommandations échouées: {e}")
+            print(f" Recommandations échouées: {e}")
             return []
     def search_by_criteria(self, criteria: Dict[str, Any], limit: int = 20) -> List[Dict[str, Any]]:
         try:
@@ -538,5 +553,618 @@ class SimilarityAgent:
             )
             return results
         except Exception as e:
-            print(f"⚠️ Recherche par critères échouée: {e}")
+            print(f" Recherche par critères échouée: {e}")
             return []
+
+
+
+
+
+    async def discover_experiments(
+        self,
+        target_id: str,
+        positive_context: List[str],
+        negative_context: List[str] = None,
+        limit: int = 10,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Découverte contextuelle d'expériences avec Qdrant Discover API.
+        Trouve des expériences similaires au target mais dans le contexte défini.
+        """
+        try:
+            context_pairs = []
+            for pos_id in positive_context:
+                neg_id = negative_context[0] if negative_context else None
+                if neg_id:
+                    context_pairs.append(
+                        ContextExamplePair(positive=pos_id, negative=neg_id)
+                    )
+
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            results = await self.qdrant.discover(
+                collection_name=collection,
+                target=target_id,
+                context=context_pairs,
+                limit=limit
+            )
+
+            print(f" Discover Qdrant: {len(results)} expériences découvertes")
+            return {
+                "discovered_experiments": results,
+                "discovery_context": {
+                    "target": target_id,
+                    "positive_examples": positive_context,
+                    "negative_examples": negative_context or []
+                },
+                "search_method": "qdrant_discover"
+            }
+        except Exception as e:
+            print(f" Discover échoué: {e}")
+            return {"discovered_experiments": [], "error": str(e)}
+
+    async def batch_search_experiments(
+        self,
+        queries: List[Dict[str, Any]],
+        limit: int = 10,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche batch pour plusieurs requêtes simultanées avec Qdrant Batch Search.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            batch_queries = []
+            for query in queries:
+                batch_queries.append({
+                    "vector": query.get("vector", [0.0] * self.qdrant.vector_size),
+                    "filter": self.qdrant.build_metadata_filter(query.get("conditions"))
+                })
+
+            results = await self.qdrant.batch_search(
+                collection_name=collection,
+                queries=batch_queries,
+                limit=limit
+            )
+
+            print(f" Batch Search Qdrant: {len(results)} ensembles de résultats")
+            return {
+                "batch_results": results,
+                "queries_count": len(queries),
+                "search_method": "qdrant_batch_search"
+            }
+        except Exception as e:
+            print(f" Batch search échoué: {e}")
+            return {"batch_results": [], "error": str(e)}
+
+    async def search_with_grouping(
+        self,
+        query_vector: List[float],
+        group_by: str = "organism",
+        group_size: int = 3,
+        limit: int = 10,
+        query_filter: Optional[Filter] = None,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche groupée par champ (organisme, type d'expérience, etc.)
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            grouped_results = await self.qdrant.search_with_grouping(
+                collection_name=collection,
+                query_vector=query_vector,
+                group_by=group_by,
+                group_size=group_size,
+                limit=limit,
+                query_filter=query_filter
+            )
+
+            total_results = sum(len(items) for items in grouped_results.values())
+            print(f" Grouped Search Qdrant: {len(grouped_results)} groupes, {total_results} résultats")
+
+            return {
+                "grouped_results": grouped_results,
+                "groups_count": len(grouped_results),
+                "total_results": total_results,
+                "group_by": group_by,
+                "search_method": "qdrant_grouped_search"
+            }
+        except Exception as e:
+            print(f" Grouped search échoué: {e}")
+            return {"grouped_results": {}, "error": str(e)}
+
+    async def search_with_ordering(
+        self,
+        query_vector: List[float],
+        order_by_field: str = "publication_date",
+        order_direction: str = "desc",
+        limit: int = 10,
+        query_filter: Optional[Filter] = None,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche avec tri par champ spécifique.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            order_by = OrderBy(
+                key=order_by_field,
+                direction=order_direction
+            )
+
+            results = await self.qdrant.search_with_ordering(
+                collection_name=collection,
+                query_vector=query_vector,
+                order_by=order_by,
+                limit=limit,
+                query_filter=query_filter
+            )
+
+            print(f" Ordered Search Qdrant: {len(results)} résultats triés par {order_by_field}")
+            return {
+                "ordered_results": results,
+                "order_by": order_by_field,
+                "order_direction": order_direction,
+                "search_method": "qdrant_ordered_search"
+            }
+        except Exception as e:
+            print(f" Ordered search échoué: {e}")
+            return {"ordered_results": [], "error": str(e)}
+
+    async def search_with_qdrant_boosting(
+        self,
+        query_vector: List[float],
+        boost_factors: Dict[str, float],
+        limit: int = 10,
+        query_filter: Optional[Filter] = None,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche avec boosting dynamique via Qdrant.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            results = await self.qdrant.search_with_boosting(
+                collection_name=collection,
+                query_vector=query_vector,
+                boost_factors=boost_factors,
+                limit=limit,
+                query_filter=query_filter
+            )
+
+            print(f" Boosted Search Qdrant: {len(results)} résultats avec boosting")
+            return {
+                "boosted_results": results,
+                "boost_factors_applied": boost_factors,
+                "search_method": "qdrant_boosted_search"
+            }
+        except Exception as e:
+            print(f" Boosted search échoué: {e}")
+            return {"boosted_results": [], "error": str(e)}
+
+    async def aggregate_experiments(
+        self,
+        group_by: str = "organism",
+        query_filter: Optional[Filter] = None,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Agrégation et statistiques sur les expériences.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            aggregation = await self.qdrant.aggregate(
+                collection_name=collection,
+                group_by=group_by,
+                query_filter=query_filter
+            )
+
+            print(f" Aggregate Qdrant: {len(aggregation)} groupes agrégés")
+            return {
+                "aggregation": aggregation,
+                "group_by": group_by,
+                "total_groups": len(aggregation),
+                "search_method": "qdrant_aggregate"
+            }
+        except Exception as e:
+            print(f" Aggregation échouée: {e}")
+            return {"aggregation": {}, "error": str(e)}
+
+    async def search_temporal_advanced(
+        self,
+        query_vector: List[float],
+        start_date: str = None,
+        end_date: str = None,
+        limit: int = 10,
+        query_filter: Optional[Filter] = None,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche temporelle avancée avec plage de dates.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            date_range = {}
+            if start_date:
+                date_range["start_date"] = start_date
+            if end_date:
+                date_range["end_date"] = end_date
+
+            if not date_range:
+                cutoff = datetime.now() - timedelta(days=365)
+                date_range["start_date"] = cutoff.isoformat()
+
+            results = await self.qdrant.search_temporal_advanced(
+                collection_name=collection,
+                query_vector=query_vector,
+                date_range=date_range,
+                limit=limit,
+                query_filter=query_filter
+            )
+
+            print(f" Temporal Advanced Search Qdrant: {len(results)} résultats")
+            return {
+                "temporal_results": results,
+                "date_range": date_range,
+                "search_method": "qdrant_temporal_advanced"
+            }
+        except Exception as e:
+            print(f" Temporal advanced search échoué: {e}")
+            return {"temporal_results": [], "error": str(e)}
+
+    async def get_experiment_by_id(
+        self,
+        experiment_id: str,
+        collection_name: str = "public_science"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Récupération d'une expérience par ID avec Qdrant Retrieve.
+        """
+        try:
+            result = await self.qdrant.retrieve(
+                collection_name=collection_name,
+                point_id=experiment_id
+            )
+
+            if result:
+                print(f" Retrieve Qdrant: expérience {experiment_id} trouvée")
+            return result
+        except Exception as e:
+            print(f" Retrieve échoué: {e}")
+            return None
+
+    async def scroll_experiments(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        collection_name: str = "public_science"
+    ) -> Dict[str, Any]:
+        """
+        Pagination des expériences avec Qdrant Scroll.
+        """
+        try:
+            results = await self.qdrant.scroll(
+                collection_name=collection_name,
+                limit=limit,
+                offset=offset
+            )
+
+            print(f" Scroll Qdrant: {len(results)} expériences (offset={offset})")
+            return {
+                "experiments": results,
+                "offset": offset,
+                "limit": limit,
+                "count": len(results),
+                "search_method": "qdrant_scroll"
+            }
+        except Exception as e:
+            print(f" Scroll échoué: {e}")
+            return {"experiments": [], "error": str(e)}
+
+    async def delete_experiments(
+        self,
+        experiment_ids: List[str],
+        collection_name: str = "private_experiments"
+    ) -> Dict[str, Any]:
+        """
+        Suppression d'expériences avec Qdrant Delete.
+        """
+        try:
+            await self.qdrant.delete(
+                collection_name=collection_name,
+                points_selector=experiment_ids
+            )
+
+            print(f" Delete Qdrant: {len(experiment_ids)} expériences supprimées")
+            return {
+                "deleted_ids": experiment_ids,
+                "count": len(experiment_ids),
+                "success": True
+            }
+        except Exception as e:
+            print(f" Delete échoué: {e}")
+            return {"deleted_ids": [], "success": False, "error": str(e)}
+
+    async def count_experiments(
+        self,
+        query_filter: Optional[Filter] = None,
+        collection_name: str = "public_science"
+    ) -> Dict[str, Any]:
+        """
+        Comptage des expériences avec Qdrant Count.
+        """
+        try:
+            count = await self.qdrant.count_points(
+                collection_name=collection_name,
+                query_filter=query_filter,
+                exact=True
+            )
+
+            print(f" Count Qdrant: {count} expériences")
+            return {
+                "count": count,
+                "collection": collection_name,
+                "filtered": query_filter is not None
+            }
+        except Exception as e:
+            print(f" Count échoué: {e}")
+            return {"count": 0, "error": str(e)}
+
+    async def search_by_multiple_organisms(
+        self,
+        query_vector: List[float],
+        organisms: List[str],
+        limit: int = 10,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche filtrée par plusieurs organismes avec MatchAny.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="organism",
+                        match=MatchAny(any=organisms)
+                    )
+                ]
+            )
+
+            results = await self.qdrant.search(
+                collection_name=collection,
+                query_vector=query_vector,
+                limit=limit,
+                query_filter=query_filter
+            )
+
+            print(f" Multi-organism Search: {len(results)} résultats pour {organisms}")
+            return {
+                "results": results,
+                "organisms_filter": organisms,
+                "search_method": "qdrant_match_any"
+            }
+        except Exception as e:
+            print(f" Multi-organism search échoué: {e}")
+            return {"results": [], "error": str(e)}
+
+    async def search_exclude_ids(
+        self,
+        query_vector: List[float],
+        exclude_ids: List[str],
+        limit: int = 10,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche en excluant certains IDs avec HasIdCondition.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            query_filter = Filter(
+                must_not=[
+                    HasIdCondition(has_id=exclude_ids)
+                ]
+            )
+
+            results = await self.qdrant.search(
+                collection_name=collection,
+                query_vector=query_vector,
+                limit=limit,
+                query_filter=query_filter
+            )
+
+            print(f" Exclude IDs Search: {len(results)} résultats (exclu {len(exclude_ids)} IDs)")
+            return {
+                "results": results,
+                "excluded_ids": exclude_ids,
+                "search_method": "qdrant_exclude_ids"
+            }
+        except Exception as e:
+            print(f" Exclude IDs search échoué: {e}")
+            return {"results": [], "error": str(e)}
+
+    async def search_with_empty_field_filter(
+        self,
+        query_vector: List[float],
+        field_name: str,
+        exclude_empty: bool = True,
+        limit: int = 10,
+        user_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche en filtrant les champs vides/null avec IsEmptyCondition/IsNullCondition.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+
+            if exclude_empty:
+                query_filter = Filter(
+                    must_not=[
+                        IsEmptyCondition(is_empty={"key": field_name}),
+                        IsNullCondition(is_null={"key": field_name})
+                    ]
+                )
+            else:
+                query_filter = Filter(
+                    should=[
+                        IsEmptyCondition(is_empty={"key": field_name}),
+                        IsNullCondition(is_null={"key": field_name})
+                    ]
+                )
+
+            results = await self.qdrant.search(
+                collection_name=collection,
+                query_vector=query_vector,
+                limit=limit,
+                query_filter=query_filter
+            )
+
+            action = "excluant" if exclude_empty else "incluant seulement"
+            print(f" Empty Field Filter: {len(results)} résultats {action} {field_name} vide")
+            return {
+                "results": results,
+                "field_filter": field_name,
+                "exclude_empty": exclude_empty,
+                "search_method": "qdrant_empty_field_filter"
+            }
+        except Exception as e:
+            print(f" Empty field filter search échoué: {e}")
+            return {"results": [], "error": str(e)}
+
+    async def full_qdrant_search(
+        self,
+        query_vector: List[float],
+        query_text: str = "",
+        conditions: Dict[str, Any] = None,
+        user_id: str = None,
+        limit: int = 20,
+        use_hybrid: bool = True,
+        use_grouping: bool = False,
+        group_by: str = "organism",
+        use_temporal: bool = False,
+        date_range: Dict[str, str] = None,
+        boost_factors: Dict[str, float] = None,
+        order_by: str = None
+    ) -> Dict[str, Any]:
+        """
+        Recherche complète utilisant toutes les fonctionnalités Qdrant disponibles.
+        """
+        try:
+            collection = f"private_experiments_{user_id}" if user_id else "public_science"
+            query_filter = self.qdrant.build_metadata_filter(conditions)
+
+            search_metadata = {
+                "collection": collection,
+                "features_used": [],
+                "search_strategy": "full_qdrant"
+            }
+
+
+            if use_grouping:
+                grouped = await self.search_with_grouping(
+                    query_vector=query_vector,
+                    group_by=group_by,
+                    limit=limit,
+                    query_filter=query_filter,
+                    user_id=user_id
+                )
+                search_metadata["features_used"].append("grouping")
+                search_metadata["grouped_results"] = grouped
+
+
+            if use_temporal and date_range:
+                temporal = await self.search_temporal_advanced(
+                    query_vector=query_vector,
+                    start_date=date_range.get("start"),
+                    end_date=date_range.get("end"),
+                    limit=limit,
+                    query_filter=query_filter,
+                    user_id=user_id
+                )
+                search_metadata["features_used"].append("temporal")
+                search_metadata["temporal_results"] = temporal
+
+
+            if use_hybrid and query_text:
+                results = await self.qdrant.hybrid_search(
+                    collection_name=collection,
+                    query_vector=query_vector,
+                    query_text=query_text,
+                    limit=limit * 2,
+                    query_filter=query_filter,
+                    fusion=Fusion.RRF
+                )
+                search_metadata["features_used"].append("hybrid_rrf")
+            else:
+                results = await self.qdrant.search(
+                    collection_name=collection,
+                    query_vector=query_vector,
+                    limit=limit * 2,
+                    query_filter=query_filter
+                )
+                search_metadata["features_used"].append("vector_search")
+
+
+            if boost_factors:
+                boosted = await self.search_with_qdrant_boosting(
+                    query_vector=query_vector,
+                    boost_factors=boost_factors,
+                    limit=limit,
+                    query_filter=query_filter,
+                    user_id=user_id
+                )
+                results = boosted.get("boosted_results", results)
+                search_metadata["features_used"].append("boosting")
+
+
+            if order_by:
+                ordered = await self.search_with_ordering(
+                    query_vector=query_vector,
+                    order_by_field=order_by,
+                    limit=limit,
+                    query_filter=query_filter,
+                    user_id=user_id
+                )
+                results = ordered.get("ordered_results", results)
+                search_metadata["features_used"].append("ordering")
+
+
+            if results:
+                top_ids = [r.get("id") for r in results[:3] if r.get("id")]
+                if top_ids:
+                    recommendations = await self.qdrant.recommend(
+                        collection_name=collection,
+                        positive_ids=top_ids,
+                        limit=5
+                    )
+                    search_metadata["recommendations"] = recommendations
+                    search_metadata["features_used"].append("recommendations")
+
+
+            aggregation = await self.aggregate_experiments(
+                group_by="organism",
+                user_id=user_id
+            )
+            search_metadata["aggregation_stats"] = aggregation
+            search_metadata["features_used"].append("aggregation")
+
+            print(f" Full Qdrant Search: {len(results)} résultats avec {len(search_metadata['features_used'])} fonctionnalités")
+
+            return {
+                "results": results[:limit],
+                "total_found": len(results),
+                "search_metadata": search_metadata
+            }
+        except Exception as e:
+            print(f" Full Qdrant search échoué: {e}")
+            return {"results": [], "error": str(e)}

@@ -48,6 +48,9 @@ settings = get_settings()
 class QdrantService:
     def __init__(self):
         self.cloud_client = None
+        print(f"QDRANT_CLOUD_URL: {settings.QDRANT_CLOUD_URL}")
+        print(f"QDRANT_CLOUD_API_KEY: {'SET' if settings.QDRANT_CLOUD_API_KEY else 'NOT SET'}")
+
         if (settings.QDRANT_CLOUD_URL and settings.QDRANT_CLOUD_API_KEY and
             settings.QDRANT_CLOUD_URL != "https://your-cluster.qdrant.io" and
             settings.QDRANT_CLOUD_API_KEY != "your-qdrant-cloud-api-key"):
@@ -57,11 +60,16 @@ class QdrantService:
                     api_key=settings.QDRANT_CLOUD_API_KEY,
                     timeout=30
                 )
-                print(" Qdrant Cloud client initialized")
+                collections = self.cloud_client.get_collections()
+                print(f"Qdrant Cloud client initialized - {len(collections.collections)} collections found")
+                for col in collections.collections:
+                    print(f"   Collection: {col.name}")
             except Exception as e:
-                print(f" Qdrant Cloud unavailable: {e}")
+                print(f"Qdrant Cloud unavailable: {e}")
+                import traceback
+                traceback.print_exc()
         else:
-            print("ℹQdrant Cloud not configured (using placeholder values)")
+            print("Qdrant Cloud not configured (using placeholder values")
         try:
             self.private_client = QdrantClient(
                 host=settings.QDRANT_PRIVATE_HOST,
@@ -69,7 +77,7 @@ class QdrantService:
                 timeout=30
             )
         except Exception as e:
-            print(f" Qdrant Private unavailable: {e}")
+            print(f"Qdrant Private unavailable: {e}")
             self.private_client = None
         self.vector_size = settings.total_vector_dim
         self.hnsw_config = {
@@ -124,18 +132,18 @@ class QdrantService:
                     **collection_config
                 )
                 self._setup_payload_schema(self.cloud_client, "public_experiments")
-                print("✓ Collection 'public_experiments' créée avec fonctionnalités avancées")
+                print("Collection 'public_experiments' created with advanced features")
                 try:
                     self.cloud_client.create_collection(
                         collection_name="biomemory_experiments",
                         **collection_config
                     )
                     self._setup_payload_schema(self.cloud_client, "biomemory_experiments")
-                    print("✓ Collection 'biomemory_experiments' créée avec fonctionnalités avancées")
+                    print("Collection 'biomemory_experiments' created with advanced features")
                 except Exception as e:
-                    print(f"ℹCollection 'biomemory_experiments' existe déjà: {e}")
+                    print(f"Collection 'biomemory_experiments' already exists: {e}")
             except Exception as e:
-                print(f"ℹCollection 'public_experiments' existe déjà ou erreur: {e}")
+                print(f"Collection 'public_experiments' already exists or error: {e}")
         if self.private_client:
             try:
                 collection_config = {
@@ -227,7 +235,7 @@ class QdrantService:
             )
             print(f"✓ Schéma de payload configuré pour {collection_name}")
         except Exception as e:
-            print(f"⚠️ Erreur lors de la configuration du schéma: {e}")
+            print(f" Erreur lors de la configuration du schéma: {e}")
             try:
                 client.create_collection(
                     collection_name="private_experiments",
@@ -238,7 +246,7 @@ class QdrantService:
                 )
                 print("✓ Collection 'private_experiments' créée (fallback)")
             except Exception as e2:
-                print(f"⚠️ Échec création collection fallback: {e2}")
+                print(f" Échec création collection fallback: {e2}")
     async def init_collections(self):
         if self.cloud_client:
             try:
@@ -394,7 +402,7 @@ class QdrantService:
             )
             print(f"✓ Schéma de payload configuré pour {collection_name}")
         except Exception as e:
-            print(f"⚠️ Erreur lors de la configuration du schéma: {e}")
+            print(f" Erreur lors de la configuration du schéma: {e}")
             try:
                 client.create_collection(
                     collection_name="private_experiments",
@@ -405,7 +413,7 @@ class QdrantService:
                 )
                 print("✓ Collection 'private_experiments' créée (fallback)")
             except Exception as e2:
-                print(f"⚠️ Échec création collection fallback: {e2}")
+                print(f" Échec création collection fallback: {e2}")
                 print(f"ℹ Collection 'private_experiments' already exists or error: {e}")
     async def upsert(
         self,
@@ -435,22 +443,31 @@ class QdrantService:
         score_threshold: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         client = self._get_client(collection_name)
-        results = client.query(
-            collection_name=collection_name,
-            query_vector=query_vector,
-            limit=limit,
-            query_filter=query_filter,
-            with_payload=with_payload,
-            score_threshold=score_threshold
-        )
-        return [
-            {
-                "id": str(hit.id),
-                "score": hit.score,
-                "payload": hit.payload if with_payload else {}
-            }
-            for hit in results
-        ]
+        print(f" Qdrant search: collection={collection_name}, vector_dim={len(query_vector)}, limit={limit}")
+
+        try:
+            results = client.query_points(
+                collection_name=collection_name,
+                query=query_vector,
+                limit=limit,
+                query_filter=query_filter,
+                with_payload=with_payload,
+                score_threshold=score_threshold
+            )
+            print(f" Qdrant search returned {len(results.points)} results")
+            return [
+                {
+                    "id": str(point.id),
+                    "score": point.score,
+                    "payload": point.payload if with_payload else {}
+                }
+                for point in results.points
+            ]
+        except Exception as e:
+            print(f" Qdrant search error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
     async def hybrid_search(
         self,
         collection_name: str,
@@ -503,21 +520,37 @@ class QdrantService:
                     limit=limit * 2
                 )
             )
-        results = client.query_points(
-            collection_name=collection_name,
-            prefetch=prefetch_queries,
-            query=Query(fusion=fusion),
-            limit=limit,
-            score_threshold=score_threshold
-        )
-        return [
-            {
-                "id": str(hit.id),
-                "score": hit.score,
-                "payload": hit.payload or {}
-            }
-            for hit in results.points
-        ]
+        try:
+
+            results = client.query_points(
+                collection_name=collection_name,
+                prefetch=prefetch_queries,
+                query=Query(fusion=fusion),
+                limit=limit,
+                score_threshold=score_threshold,
+                with_payload=True
+            )
+            print(f" Hybrid search returned {len(results.points)} results")
+            return [
+                {
+                    "id": str(hit.id),
+                    "score": hit.score,
+                    "payload": hit.payload or {}
+                }
+                for hit in results.points
+            ]
+        except Exception as e:
+            print(f" Hybrid search error: {e}")
+            import traceback
+            traceback.print_exc()
+
+            return await self.search(
+                collection_name=collection_name,
+                query_vector=query_vector,
+                limit=limit,
+                query_filter=query_filter,
+                score_threshold=score_threshold
+            )
     async def recommend(
         self,
         collection_name: str,
@@ -528,24 +561,33 @@ class QdrantService:
         query_filter: Optional[Filter] = None,
         score_threshold: Optional[float] = None
     ) -> List[Dict[str, Any]]:
+        from qdrant_client.models import RecommendInput, RecommendQuery
+        
         client = self._get_client(collection_name)
-        results = client.recommend(
+        
+
+        recommend_input = RecommendInput(
+            positive=[int(pid) if pid.isdigit() else pid for pid in positive_ids],
+            negative=[int(nid) if nid.isdigit() else nid for nid in (negative_ids or [])]
+        )
+        recommend_query = RecommendQuery(recommend=recommend_input)
+        
+        results = client.query_points(
             collection_name=collection_name,
-            positive=positive_ids,
-            negative=negative_ids or [],
-            query_vector=query_vector,
+            query=recommend_query,
             limit=limit,
-            filter=query_filter,
+            query_filter=query_filter,
             score_threshold=score_threshold,
             with_payload=True
         )
+        
         return [
             {
-                "id": str(hit.id),
-                "score": hit.score,
-                "payload": hit.payload or {}
+                "id": str(point.id),
+                "score": point.score,
+                "payload": point.payload or {}
             }
-            for hit in results
+            for point in results.points
         ]
     async def discover(
         self,
@@ -555,22 +597,32 @@ class QdrantService:
         limit: int = 10,
         query_filter: Optional[Filter] = None
     ) -> List[Dict[str, Any]]:
+        from qdrant_client.models import DiscoverInput, DiscoverQuery
+        
         client = self._get_client(collection_name)
-        results = client.discover(
-            collection_name=collection_name,
+        
+
+        discover_input = DiscoverInput(
             target=target,
-            context=context,
+            context=context
+        )
+        discover_query = DiscoverQuery(discover=discover_input)
+        
+        results = client.query_points(
+            collection_name=collection_name,
+            query=discover_query,
             limit=limit,
-            filter=query_filter,
+            query_filter=query_filter,
             with_payload=True
         )
+        
         return [
             {
-                "id": str(hit.id),
-                "score": hit.score,
-                "payload": hit.payload or {}
+                "id": str(point.id),
+                "score": point.score,
+                "payload": point.payload or {}
             }
-            for hit in results
+            for point in results.points
         ]
     async def search_with_grouping(
         self,
@@ -582,25 +634,25 @@ class QdrantService:
         query_filter: Optional[Filter] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         client = self._get_client(collection_name)
-        results = client.search_groups(
+        results = client.query_points_groups(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             group_by=group_by,
             limit=limit,
             group_size=group_size,
-            filter=query_filter,
+            query_filter=query_filter,
             with_payload=True
         )
         grouped_results = {}
         for group in results.groups:
-            group_name = group.hits[0].payload.get(group_by, "unknown")
+            group_name = group.hits[0].payload.get(group_by, "unknown") if group.hits else "unknown"
             grouped_results[group_name] = [
                 {
-                    "id": str(hit.id),
-                    "score": hit.score,
-                    "payload": hit.payload or {}
+                    "id": str(point.id),
+                    "score": point.score,
+                    "payload": point.payload or {}
                 }
-                for hit in group.hits
+                for point in group.hits
             ]
         return grouped_results
     async def search_with_ordering(
@@ -612,21 +664,20 @@ class QdrantService:
         query_filter: Optional[Filter] = None
     ) -> List[Dict[str, Any]]:
         client = self._get_client(collection_name)
-        results = client.search(
+        results = client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
-            filter=query_filter,
-            order_by=order_by,
+            query_filter=query_filter,
             with_payload=True
         )
         return [
             {
-                "id": str(hit.id),
-                "score": hit.score,
-                "payload": hit.payload or {}
+                "id": str(point.id),
+                "score": point.score,
+                "payload": point.payload or {}
             }
-            for hit in results
+            for point in results.points
         ]
     async def batch_search(
         self,
@@ -634,30 +685,32 @@ class QdrantService:
         queries: List[Dict[str, Any]],
         limit: int = 10
     ) -> List[List[Dict[str, Any]]]:
+        from qdrant_client.models import QueryRequest
+        
         client = self._get_client(collection_name)
-        search_requests = []
+        query_requests = []
         for query in queries:
-            search_requests.append(
-                SearchRequest(
-                    vector=query.get("vector", [0.0] * self.vector_size),
+            query_requests.append(
+                QueryRequest(
+                    query=query.get("vector", [0.0] * self.vector_size),
                     filter=query.get("filter"),
                     limit=limit,
                     with_payload=True
                 )
             )
-        results = client.search_batch(
+        results = client.query_batch_points(
             collection_name=collection_name,
-            requests=search_requests
+            requests=query_requests
         )
         batch_results = []
         for result_set in results:
             batch_results.append([
                 {
-                    "id": str(hit.id),
-                    "score": hit.score,
-                    "payload": hit.payload or {}
+                    "id": str(point.id),
+                    "score": point.score,
+                    "payload": point.payload or {}
                 }
-                for hit in result_set
+                for point in result_set.points
             ])
         return batch_results
     async def count_points(
@@ -817,9 +870,9 @@ class QdrantService:
         score_threshold: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         client = self._get_client(collection_name)
-        results = client.search(
+        results = client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             query_filter=query_filter,
             with_payload=with_payload,
@@ -827,11 +880,11 @@ class QdrantService:
         )
         return [
             {
-                "id": str(hit.id),
-                "score": hit.score,
-                "payload": hit.payload if with_payload else {}
+                "id": str(point.id),
+                "score": point.score,
+                "payload": point.payload if with_payload else {}
             }
-            for hit in results
+            for point in results.points
         ]
     async def retrieve(
         self,
@@ -897,6 +950,398 @@ class QdrantService:
             print(f"Qdrant {instance} health check failed: {e}")
             return False
         return False
+
+
+
+
+
+    async def upsert_with_sparse(
+        self,
+        collection_name: str,
+        points: List[Dict[str, Any]]
+    ):
+        """
+        Upsert avec vecteurs denses ET sparse pour recherche hybride.
+        """
+        client = self._get_client(collection_name)
+        point_structs = []
+        for point in points:
+            sparse_vector = None
+            text = point.get("payload", {}).get("text", "")
+            if text:
+                sparse_vector = self._generate_sparse_vector(text)
+
+            point_struct = PointStruct(
+                id=point["id"],
+                vector={
+                    "": point["vector"],
+                },
+                payload=point.get("payload", {})
+            )
+            if sparse_vector:
+                point_struct.vector["text_keywords"] = sparse_vector
+
+            point_structs.append(point_struct)
+
+        client.upsert(
+            collection_name=collection_name,
+            points=point_structs
+        )
+        print(f" Upsert with sparse vectors: {len(point_structs)} points")
+
+    def _generate_sparse_vector(self, text: str) -> SparseVector:
+        """
+        Génère un vecteur sparse à partir du texte (BM25-like).
+        """
+        words = text.lower().split()
+        word_counts = {}
+        for word in words:
+            if len(word) >= 2:
+                word_counts[word] = word_counts.get(word, 0) + 1
+
+        indices = []
+        values = []
+        for idx, (word, count) in enumerate(sorted(word_counts.items())):
+            indices.append(hash(word) % 100000)
+            values.append(float(count))
+
+        return SparseVector(indices=indices, values=values)
+
+    async def hybrid_search_with_sparse(
+        self,
+        collection_name: str,
+        query_vector: List[float],
+        query_text: str,
+        limit: int = 10,
+        query_filter: Optional[Filter] = None,
+        dense_weight: float = 0.7,
+        sparse_weight: float = 0.3
+    ) -> List[Dict[str, Any]]:
+        """
+        Recherche hybride utilisant vecteurs denses ET sparse.
+        """
+        client = self._get_client(collection_name)
+
+        prefetch_queries = [
+            Prefetch(
+                query=query_vector,
+                using="",
+                limit=limit * 3
+            )
+        ]
+
+        if query_text:
+            sparse_vector = self._generate_sparse_vector(query_text)
+            prefetch_queries.append(
+                Prefetch(
+                    query=sparse_vector,
+                    using="text_keywords",
+                    limit=limit * 3
+                )
+            )
+
+        results = client.query_points(
+            collection_name=collection_name,
+            prefetch=prefetch_queries,
+            query=Query(fusion=Fusion.RRF),
+            limit=limit,
+            with_payload=True
+        )
+
+        return [
+            {
+                "id": str(hit.id),
+                "score": hit.score,
+                "payload": hit.payload or {}
+            }
+            for hit in results.points
+        ]
+
+
+
+
+
+    async def create_collection_alias(
+        self,
+        collection_name: str,
+        alias_name: str
+    ) -> bool:
+        """
+        Crée un alias pour une collection (utile pour blue-green deployments).
+        """
+        try:
+            client = self._get_client(collection_name)
+            client.update_collection_aliases(
+                change_aliases_operations=[
+                    {
+                        "create_alias": {
+                            "collection_name": collection_name,
+                            "alias_name": alias_name
+                        }
+                    }
+                ]
+            )
+            print(f" Alias '{alias_name}' créé pour collection '{collection_name}'")
+            return True
+        except Exception as e:
+            print(f" Création alias échouée: {e}")
+            return False
+
+    async def switch_collection_alias(
+        self,
+        old_collection: str,
+        new_collection: str,
+        alias_name: str
+    ) -> bool:
+        """
+        Bascule un alias d'une collection à une autre (zero-downtime).
+        """
+        try:
+            client = self._get_client(old_collection)
+            client.update_collection_aliases(
+                change_aliases_operations=[
+                    {
+                        "delete_alias": {
+                            "alias_name": alias_name
+                        }
+                    },
+                    {
+                        "create_alias": {
+                            "collection_name": new_collection,
+                            "alias_name": alias_name
+                        }
+                    }
+                ]
+            )
+            print(f" Alias '{alias_name}' basculé de '{old_collection}' vers '{new_collection}'")
+            return True
+        except Exception as e:
+            print(f" Switch alias échoué: {e}")
+            return False
+
+    async def create_snapshot(
+        self,
+        collection_name: str
+    ) -> Optional[str]:
+        """
+        Crée un snapshot de la collection pour backup.
+        """
+        try:
+            client = self._get_client(collection_name)
+            snapshot_info = client.create_snapshot(collection_name=collection_name)
+            print(f" Snapshot créé: {snapshot_info.name}")
+            return snapshot_info.name
+        except Exception as e:
+            print(f" Création snapshot échouée: {e}")
+            return None
+
+    async def list_snapshots(
+        self,
+        collection_name: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Liste les snapshots disponibles pour une collection.
+        """
+        try:
+            client = self._get_client(collection_name)
+            snapshots = client.list_snapshots(collection_name=collection_name)
+            return [
+                {
+                    "name": s.name,
+                    "creation_time": s.creation_time,
+                    "size": s.size
+                }
+                for s in snapshots
+            ]
+        except Exception as e:
+            print(f" Liste snapshots échouée: {e}")
+            return []
+
+    async def restore_snapshot(
+        self,
+        collection_name: str,
+        snapshot_name: str
+    ) -> bool:
+        """
+        Restaure une collection à partir d'un snapshot.
+        """
+        try:
+            client = self._get_client(collection_name)
+            client.recover_snapshot(
+                collection_name=collection_name,
+                location=snapshot_name
+            )
+            print(f" Snapshot '{snapshot_name}' restauré pour '{collection_name}'")
+            return True
+        except Exception as e:
+            print(f" Restauration snapshot échouée: {e}")
+            return False
+
+
+
+
+
+    async def set_payload(
+        self,
+        collection_name: str,
+        point_id: str,
+        payload: Dict[str, Any]
+    ) -> bool:
+        """
+        Met à jour le payload d'un point sans réindexer.
+        """
+        try:
+            client = self._get_client(collection_name)
+            client.set_payload(
+                collection_name=collection_name,
+                payload=payload,
+                points=[point_id]
+            )
+            print(f" Payload mis à jour pour point {point_id}")
+            return True
+        except Exception as e:
+            print(f" Set payload échoué: {e}")
+            return False
+
+    async def overwrite_payload(
+        self,
+        collection_name: str,
+        point_id: str,
+        payload: Dict[str, Any]
+    ) -> bool:
+        """
+        Remplace entièrement le payload d'un point.
+        """
+        try:
+            client = self._get_client(collection_name)
+            client.overwrite_payload(
+                collection_name=collection_name,
+                payload=payload,
+                points=[point_id]
+            )
+            print(f" Payload remplacé pour point {point_id}")
+            return True
+        except Exception as e:
+            print(f" Overwrite payload échoué: {e}")
+            return False
+
+    async def delete_payload_keys(
+        self,
+        collection_name: str,
+        point_id: str,
+        keys: List[str]
+    ) -> bool:
+        """
+        Supprime des clés spécifiques du payload.
+        """
+        try:
+            client = self._get_client(collection_name)
+            client.delete_payload(
+                collection_name=collection_name,
+                keys=keys,
+                points=[point_id]
+            )
+            print(f" Clés {keys} supprimées du payload pour point {point_id}")
+            return True
+        except Exception as e:
+            print(f" Delete payload keys échoué: {e}")
+            return False
+
+
+
+
+
+    async def random_sample(
+        self,
+        collection_name: str,
+        limit: int = 10,
+        query_filter: Optional[Filter] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Échantillonnage aléatoire de points pour diversité.
+        """
+        try:
+            client = self._get_client(collection_name)
+            results, _ = client.scroll(
+                collection_name=collection_name,
+                limit=limit * 10,
+                with_payload=True,
+                filter=query_filter
+            )
+
+            import random
+            sampled = random.sample(results, min(limit, len(results)))
+
+            return [
+                {
+                    "id": str(point.id),
+                    "payload": point.payload or {}
+                }
+                for point in sampled
+            ]
+        except Exception as e:
+            print(f" Random sample échoué: {e}")
+            return []
+
+    async def search_with_oversampling(
+        self,
+        collection_name: str,
+        query_vector: List[float],
+        limit: int = 10,
+        oversampling_factor: float = 2.0,
+        query_filter: Optional[Filter] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Recherche avec sur-échantillonnage pour améliorer la précision avec quantization.
+        """
+        client = self._get_client(collection_name)
+
+        oversample_limit = int(limit * oversampling_factor)
+
+        results = client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            limit=oversample_limit,
+            query_filter=query_filter,
+            with_payload=True
+        )
+
+        return [
+            {
+                "id": str(point.id),
+                "score": point.score,
+                "payload": point.payload or {}
+            }
+            for point in results.points[:limit]
+        ]
+
+    async def faceted_count(
+        self,
+        collection_name: str,
+        facet_field: str,
+        query_filter: Optional[Filter] = None
+    ) -> Dict[str, int]:
+        """
+        Comptage par facettes (pour filtres dans l'UI).
+        """
+        try:
+            all_points = await self.scroll(
+                collection_name=collection_name,
+                limit=10000,
+                with_payload=True
+            )
+
+            facet_counts = {}
+            for point in all_points:
+                value = point.get("payload", {}).get(facet_field, "unknown")
+                if isinstance(value, dict):
+                    value = value.get("organism", "unknown")
+                facet_counts[str(value)] = facet_counts.get(str(value), 0) + 1
+
+            return dict(sorted(facet_counts.items(), key=lambda x: x[1], reverse=True))
+        except Exception as e:
+            print(f" Faceted count échoué: {e}")
+            return {}
     def build_metadata_filter(
         self,
         conditions: Optional[Dict[str, Any]] = None
@@ -904,54 +1349,78 @@ class QdrantService:
         if not conditions:
             return None
         must_conditions = []
+
+
         if conditions.get("organism"):
+            organism_value = conditions["organism"]
+
             must_conditions.append(
                 FieldCondition(
-                    key="conditions.organism",
-                    match=MatchValue(value=conditions["organism"])
+                    key="organism",
+                    match=MatchText(text=organism_value)
                 )
             )
-        if conditions.get("temperature") is not None:
-            temp = conditions["temperature"]
+
+
+        if conditions.get("assay"):
             must_conditions.append(
                 FieldCondition(
-                    key="conditions.temperature",
-                    range=Range(
-                        gte=temp - 5.0,
-                        lte=temp + 5.0
-                    )
+                    key="assay",
+                    match=MatchText(text=conditions["assay"])
                 )
             )
-        if conditions.get("ph") is not None:
-            ph = conditions["ph"]
+
+
+        if conditions.get("type"):
             must_conditions.append(
                 FieldCondition(
-                    key="conditions.ph",
-                    range=Range(
-                        gte=ph - 0.5,
-                        lte=ph + 0.5
-                    )
+                    key="type",
+                    match=MatchValue(value=conditions["type"])
                 )
             )
-        if "success" in conditions and conditions["success"] is not None:
+
+
+        if conditions.get("source"):
             must_conditions.append(
                 FieldCondition(
-                    key="success",
-                    match=MatchValue(value=conditions["success"])
+                    key="source",
+                    match=MatchValue(value=conditions["source"])
                 )
             )
+
+
+        if conditions.get("contact"):
+            must_conditions.append(
+                FieldCondition(
+                    key="contact",
+                    match=MatchText(text=conditions["contact"])
+                )
+            )
+
+
+
+
         if not must_conditions:
             return None
         return Filter(must=must_conditions)
     def _get_client(self, collection_name: str) -> QdrantClient:
+        print(f" _get_client: collection={collection_name}, cloud={self.cloud_client is not None}, private={self.private_client is not None}")
+
         if collection_name in ["public_science", "biomemory_experiments"]:
             if self.cloud_client:
+                print(f" Using CLOUD client for {collection_name}")
                 return self.cloud_client
             if self.private_client:
+                print(f" Fallback to PRIVATE client for {collection_name}")
                 return self.private_client
-        if collection_name == "private_experiments":
+        if collection_name == "private_experiments" or collection_name.startswith("private_experiments_"):
             if self.private_client:
+                print(f" Using PRIVATE client for {collection_name}")
                 return self.private_client
+
+            if self.cloud_client:
+                print(f" Fallback to CLOUD client for {collection_name}")
+                return self.cloud_client
         raise ValueError(f"No Qdrant client available for collection {collection_name}")
     async def search_temporal_advanced(
         self,
@@ -985,21 +1454,21 @@ class QdrantService:
                 combined_filter = temporal_filter
         else:
             combined_filter = query_filter
-        results = client.search(
+        results = client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             query_filter=combined_filter,
             with_payload=True
         )
         return [
             {
-                "id": str(hit.id),
-                "score": hit.score,
-                "payload": hit.payload or {},
+                "id": str(point.id),
+                "score": point.score,
+                "payload": point.payload or {},
                 "temporal_match": True
             }
-            for hit in results
+            for point in results.points
         ]
     async def search_with_grouping(
         self,
@@ -1011,23 +1480,23 @@ class QdrantService:
         query_filter: Optional[Filter] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         client = self._get_client(collection_name)
-        extended_results = client.search(
+        extended_results = client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit * 5,
             query_filter=query_filter,
             with_payload=True
         )
         groups = {}
-        for hit in extended_results:
-            payload = hit.payload or {}
+        for point in extended_results.points:
+            payload = point.payload or {}
             group_key = payload.get(group_by, "unknown")
             if group_key not in groups:
                 groups[group_key] = []
             if len(groups[group_key]) < group_size:
                 groups[group_key].append({
-                    "id": str(hit.id),
-                    "score": hit.score,
+                    "id": str(point.id),
+                    "score": point.score,
                     "payload": payload,
                     "group": group_key
                 })
@@ -1048,23 +1517,23 @@ class QdrantService:
         query_filter: Optional[Filter] = None
     ) -> List[Dict[str, Any]]:
         client = self._get_client(collection_name)
-        results = client.search(
+        results = client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit * 2,
             query_filter=query_filter,
             with_payload=True
         )
         boosted_results = []
-        for hit in results:
-            payload = hit.payload or {}
-            score = hit.score
+        for point in results.points:
+            payload = point.payload or {}
+            score = point.score
             for boost_key, boost_value in boost_factors.items():
                 if payload.get(boost_key):
                     score *= boost_value
             boosted_results.append({
-                "id": str(hit.id),
-                "original_score": hit.score,
+                "id": str(point.id),
+                "original_score": point.score,
                 "boosted_score": score,
                 "payload": payload,
                 "boosting_applied": boost_factors

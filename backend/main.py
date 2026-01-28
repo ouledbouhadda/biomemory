@@ -17,19 +17,19 @@ def get_user_repository() -> UserRepository:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _user_repository
-    print(" Starting BioMemory API...")
-    print(f"   Version: {settings.APP_VERSION}")
-    print(f"   Debug: {settings.DEBUG}")
+    print("Starting BioMemory API...")
+    print(f"Version: {settings.APP_VERSION}")
+    print(f"Debug: {settings.DEBUG}")
     try:
         qdrant = get_qdrant_service()
         await qdrant.init_collections()
-        print("    Qdrant collections initialized")
+        print("Qdrant collections initialized")
         _user_repository = UserRepository(qdrant.private_client)
-        print("   User repository initialized")
+        print("User repository initialized")
     except Exception as e:
-        print(f"    Qdrant initialization warning: {e}")
-    print(" BioMemory API ready!")
-    print(f"   API Docs: http://localhost:8000/api/docs")
+        print(f"Qdrant initialization warning: {e}")
+    print("BioMemory API ready!")
+    print(f"API Docs: http://localhost:8000/api/docs")
     yield
     print("Shutting down BioMemory API...")
 app = FastAPI(

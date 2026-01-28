@@ -13,14 +13,14 @@ class EmbeddingService:
         try:
             self.text_model = SentenceTransformer(settings.EMBEDDING_MODEL)
         except Exception as e:
-            print(f"⚠️ Failed to load SentenceTransformer: {e}")
+            print(f"Failed to load SentenceTransformer: {e}")
             self.text_model = None
         try:
             self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
             self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-            print("✓ CLIP model loaded for image embeddings")
+            print("CLIP model loaded for image embeddings")
         except Exception as e:
-            print(f"⚠️ Failed to load CLIP model: {e}")
+            print(f"Failed to load CLIP model: {e}")
             self.clip_model = None
             self.clip_processor = None
         self.kmer_size = 3
@@ -28,13 +28,18 @@ class EmbeddingService:
         self.seq_dim = settings.SEQUENCE_EMBEDDING_DIM
         self.cond_dim = settings.CONDITIONS_EMBEDDING_DIM
         self.image_dim = 512
+    @property
+    def total_dim(self) -> int:
+        """Dimension totale sans image (488 = 384 + 100 + 4)."""
+        return self.text_dim + self.seq_dim + self.cond_dim
+
     async def generate_multimodal_embedding(
         self,
         text: Optional[str] = None,
         sequence: Optional[str] = None,
         conditions: Optional[Dict[str, Any]] = None,
         image_base64: Optional[str] = None,
-        include_image: bool = True
+        include_image: bool = False
     ) -> np.ndarray:
         text_emb = self._encode_text(text)
         seq_emb = self._encode_sequence(sequence)

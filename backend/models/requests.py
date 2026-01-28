@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 from enum import Enum
+
 class OrganismType(str, Enum):
     HUMAN = "human"
     MOUSE = "mouse"
@@ -8,13 +9,27 @@ class OrganismType(str, Enum):
     YEAST = "yeast"
     ARABIDOPSIS = "arabidopsis"
     DROSOPHILA = "drosophila"
+    RAT = "rat"
     OTHER = "other"
+
 class ExperimentConditions(BaseModel):
-    organism: Optional[OrganismType] = None
+    organism: Optional[str] = None
     temperature: Optional[float] = Field(None, ge=-273.15, le=200, description="Temperature in Celsius")
     ph: Optional[float] = Field(None, ge=0, le=14, description="pH value")
     protocol_id: Optional[str] = Field(None, description="Protocol reference ID")
     additional_params: Optional[Dict[str, Any]] = Field(None, description="Additional experimental parameters")
+    
+    @field_validator('temperature', 'ph', mode='before')
+    @classmethod
+    def coerce_float(cls, v):
+        """Convert strings to floats if needed"""
+        if isinstance(v, str):
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return v
+        return v
+    
     class Config:
         json_schema_extra = {
             "example": {
@@ -63,6 +78,15 @@ class SearchRequest(BaseModel):
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     include_failures: bool = Field(True, description="Include failed experiments in results")
     similarity_threshold: float = Field(0.0, ge=0.0, le=1.0, description="Minimum similarity score")
+    
+    @field_validator('sequence', 'image_base64')
+    @classmethod
+    def convert_empty_to_none(cls, v):
+        """Convert empty strings to None"""
+        if v == '':
+            return None
+        return v
+    
     class Config:
         json_schema_extra = {
             "example": {

@@ -19,9 +19,9 @@ class UserRepository:
                     collection_name=self.COLLECTION_NAME,
                     vectors_config=VectorParams(size=1, distance=Distance.COSINE)
                 )
-                print(f"✅ Collection '{self.COLLECTION_NAME}' créée dans Qdrant")
+                print(f" Collection '{self.COLLECTION_NAME}' créée dans Qdrant")
         except Exception as e:
-            print(f"⚠️ Erreur lors de la création de la collection users: {e}")
+            print(f" Erreur lors de la création de la collection users: {e}")
     def create_user(self, email: str, hashed_password: str, full_name: Optional[str] = None) -> Dict[str, Any]:
         existing_user = self.get_user_by_email(email)
         if existing_user:
@@ -73,7 +73,7 @@ class UserRepository:
                     return points[0].payload
             return None
         except Exception as e:
-            print(f"⚠️ Erreur lors de la récupération de l'utilisateur: {e}")
+            print(f" Erreur lors de la récupération de l'utilisateur: {e}")
             return None
     def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         try:
@@ -87,7 +87,7 @@ class UserRepository:
                 return result[0].payload
             return None
         except Exception as e:
-            print(f"⚠️ Erreur lors de la récupération de l'utilisateur: {e}")
+            print(f" Erreur lors de la récupération de l'utilisateur: {e}")
             return None
     def update_user(self, email: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         user = self.get_user_by_email(email)
@@ -128,14 +128,14 @@ class UserRepository:
                 return [point.payload for point in points]
             return []
         except Exception as e:
-            print(f"⚠️ Erreur lors de la liste des utilisateurs: {e}")
+            print(f" Erreur lors de la liste des utilisateurs: {e}")
             return []
     def count_users(self) -> int:
         try:
             collection_info = self.client.get_collection(self.COLLECTION_NAME)
             return collection_info.points_count
         except Exception as e:
-            print(f"⚠️ Erreur lors du comptage: {e}")
+            print(f" Erreur lors du comptage: {e}")
             return 0
     def update_last_login(self, email: str):
         self.update_user(email, {

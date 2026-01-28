@@ -82,28 +82,58 @@ export default function SearchPanel({ onSearchResults, onDesignResults }) {
     setError(null);
 
     try {
-      const query = {
-        text: formData.text || undefined,
-        sequence: formData.sequence || undefined,
-        image_base64: formData.image || undefined,
-        conditions: {},
+      // Construire les conditions correctement
+      const conditionsObj = {};
+      if (formData.organism) conditionsObj.organism = formData.organism;
+      if (formData.temperature) conditionsObj.temperature = parseFloat(formData.temperature);
+      if (formData.ph) conditionsObj.ph = parseFloat(formData.ph);
+      
+      const searchPayload = {
+        text: formData.text || '',
+        sequence: formData.sequence || null,
+        image_base64: formData.image || null,
         limit: 10,
-        similarity_threshold: 0.7,
+        similarity_threshold: 0.0
       };
-
-      if (formData.organism) query.conditions.organism = formData.organism;
-      if (formData.temperature) query.conditions.temperature = parseFloat(formData.temperature);
-      if (formData.ph) query.conditions.ph = parseFloat(formData.ph);
-
-      if (Object.keys(query.conditions).length === 0) {
-        delete query.conditions;
+      
+      // Ajouter conditions seulement si on a au moins un champ
+      if (Object.keys(conditionsObj).length > 0) {
+        searchPayload.conditions = conditionsObj;
       }
 
-      const results = await searchAPI.search(query);
+      console.log('Sending search payload:', searchPayload);
+
+      // 🚀 NOUVEL ENDPOINT DIRECT - Fonctionne maintenant!
+      const response = await fetch('/api/v1/search/direct', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('access_token') || ''}`
+        },
+        body: JSON.stringify(searchPayload)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('422 Error Details:', JSON.stringify(errorData, null, 2));
+        if (errorData.detail) {
+          if (Array.isArray(errorData.detail)) {
+            console.error('Validation errors:');
+            errorData.detail.forEach(err => {
+              console.error(`  - ${err.loc?.join('.')}: ${err.msg} (type: ${err.type})`);
+            });
+          } else {
+            console.error('Error:', errorData.detail);
+          }
+        }
+        throw new Error(JSON.stringify(errorData));
+      }
+
+      const results = await response.json();
       onSearchResults(results);
     } catch (err) {
-      const errorDetail = err.response?.data?.detail;
-      setError(formatValidationErrors(errorDetail) || 'Search failed');
+      console.error('Search error:', err);
+      setError(err.message || 'Search failed');
     } finally {
       setLoading(false);
     }

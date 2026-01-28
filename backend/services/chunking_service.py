@@ -6,7 +6,7 @@ try:
     CHONKIE_AVAILABLE = True
 except ImportError:
     CHONKIE_AVAILABLE = False
-    print("⚠️ Chonkie not installed. Install with: pip install chonkie")
+    print(" Chonkie not installed. Install with: pip install chonkie")
 from backend.config.settings import get_settings
 settings = get_settings()
 @dataclass
@@ -117,7 +117,7 @@ class BiologicalChunkingService:
                 strategy="semantic"
             )
         except Exception as e:
-            print(f"⚠️ Semantic chunking failed: {e}. Falling back to sentence chunking.")
+            print(f" Semantic chunking failed: {e}. Falling back to sentence chunking.")
             return self._chunk_sentence(text, max_chunk_size, overlap)
     def _chunk_sentence(
         self,
@@ -144,7 +144,7 @@ class BiologicalChunkingService:
                 strategy="sentence"
             )
         except Exception as e:
-            print(f"⚠️ Sentence chunking failed: {e}. Falling back to token chunking.")
+            print(f" Sentence chunking failed: {e}. Falling back to token chunking.")
             return self._chunk_token(text, max_chunk_size, overlap)
     def _chunk_token(
         self,
@@ -172,7 +172,7 @@ class BiologicalChunkingService:
                 strategy="token"
             )
         except Exception as e:
-            print(f"⚠️ Token chunking failed: {e}. Using manual fallback.")
+            print(f" Token chunking failed: {e}. Using manual fallback.")
             return self._chunk_manual(text, max_chunk_size * 4)
     def _chunk_sdpm(
         self,
@@ -199,7 +199,7 @@ class BiologicalChunkingService:
                 strategy="sdpm"
             )
         except Exception as e:
-            print(f"⚠️ SDPM chunking failed: {e}. Falling back to sentence chunking.")
+            print(f" SDPM chunking failed: {e}. Falling back to sentence chunking.")
             return self._chunk_sentence(text, max_chunk_size, overlap)
     def _chunk_manual(
         self,
