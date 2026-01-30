@@ -1,3 +1,4 @@
+import logging
 from typing import Dict, Any, List, Optional
 from backend.services.qdrant_service import get_qdrant_service
 from qdrant_client.models import (
@@ -7,6 +8,8 @@ from qdrant_client.models import (
 )
 from datetime import datetime, timedelta
 import asyncio
+
+logger = logging.getLogger("biomemory.similarity")
 
 
 class SimilarityAgent:
@@ -59,9 +62,9 @@ class SimilarityAgent:
                 fusion=Fusion.RRF
             )
             if hybrid_results:
-                print(f"Hybrid search succeeded: {len(hybrid_results)} results")
+                logger.info("Hybrid search succeeded: %d results", len(hybrid_results))
                 return hybrid_results
-            print("Fallback to vector search only")
+            logger.info("Fallback to vector search only")
             return self.qdrant.search_sync(
                 collection_name=collection_name,
                 query_vector=query_vector,
@@ -69,7 +72,7 @@ class SimilarityAgent:
                 query_filter=filter_conditions
             )
         except Exception as e:
-            print(f"Hybrid search failed: {e}, fallback to basic search")
+            logger.warning("Hybrid search failed: %s, fallback to basic search", e)
             return self.qdrant.search_sync(
                 collection_name=collection_name,
                 query_vector=query_vector,
@@ -172,7 +175,7 @@ class SimilarityAgent:
                 result["source"] = "private"
             return reranked_results[:limit]
         except Exception as e:
-            print(f"Erreur recherche privée hybride: {e}")
+            logger.error("Private hybrid search error: %s", e)
             return []
     def _search_public_hybrid(self, query_vector: List[float], query_text: str,
                              limit: int, filter_conditions: Filter = None,
@@ -221,7 +224,7 @@ class SimilarityAgent:
                 result["source"] = "public"
             return reranked_results[:limit]
         except Exception as e:
-            print(f"Erreur recherche publique hybride: {e}")
+            logger.error("Public hybrid search error: %s", e)
             return []
     def _merge_results_advanced(self, all_results: List[Dict[str, Any]],
                                limit: int) -> List[Dict[str, Any]]:
@@ -430,7 +433,7 @@ class SimilarityAgent:
             )
             return results
         except Exception as e:
-            print(f" Private search failed: {e}")
+            logger.error(" Private search failed: %s", e)
             return []
     async def _search_cloud(
         self,
@@ -439,12 +442,12 @@ class SimilarityAgent:
         limit: int,
         threshold: float
     ) -> List[Dict]:
-        print(f" _search_cloud: cloud_client exists = {self.qdrant.cloud_client is not None}")
+        logger.debug("_search_cloud: cloud_client=%s", self.qdrant.cloud_client is not None)
 
 
         try:
             query_vector = embedding.tolist() if hasattr(embedding, 'tolist') else embedding
-            print(f" Cloud search: vector_dim={len(query_vector)}, limit={limit}, threshold={threshold}")
+            logger.debug("Cloud search: vector_dim=%d, limit=%d, threshold=%s", len(query_vector), limit, threshold)
 
             metadata_filter = self.qdrant.build_metadata_filter(conditions)
             results = await self.qdrant.search(
@@ -455,12 +458,12 @@ class SimilarityAgent:
                 with_payload=True,
                 score_threshold=threshold if threshold > 0 else None
             )
-            print(f" Cloud search returned {len(results)} results")
+            logger.info("Cloud search returned %d results", len(results))
             return results
         except Exception as e:
-            print(f" Cloud search failed: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(" Cloud search failed: %s", e)
+            
+            
             return []
     def _merge_results(
         self,
@@ -489,9 +492,9 @@ class SimilarityAgent:
                 score_threshold=0.1
             )
             if recommendations:
-                print(f" Recommandations générées: {len(recommendations)} expériences")
+                logger.info("Recommandations générées: %d expériences", len(recommendations))
                 return recommendations
-            print("ℹ️ Fallback vers recommandations dans données publiques")
+            logger.info("Fallback to public recommendations")
             return self.qdrant.recommend(
                 collection_name="public_science",
                 positive_ids=experiment_ids,
@@ -501,7 +504,7 @@ class SimilarityAgent:
                 score_threshold=0.1
             )
         except Exception as e:
-            print(f" Recommandations échouées: {e}")
+            logger.error("Recommendations failed: %s", e)
             return []
     def search_by_criteria(self, criteria: Dict[str, Any], limit: int = 20) -> List[Dict[str, Any]]:
         try:
@@ -553,7 +556,7 @@ class SimilarityAgent:
             )
             return results
         except Exception as e:
-            print(f" Recherche par critères échouée: {e}")
+            logger.error(" Recherche par critères failed: %s", e)
             return []
 
 
@@ -590,7 +593,7 @@ class SimilarityAgent:
                 limit=limit
             )
 
-            print(f" Discover Qdrant: {len(results)} expériences découvertes")
+            logger.info("Discover Qdrant: %d expériences découvertes", len(results))
             return {
                 "discovered_experiments": results,
                 "discovery_context": {
@@ -601,7 +604,7 @@ class SimilarityAgent:
                 "search_method": "qdrant_discover"
             }
         except Exception as e:
-            print(f" Discover échoué: {e}")
+            logger.error(" Discover failed: %s", e)
             return {"discovered_experiments": [], "error": str(e)}
 
     async def batch_search_experiments(
@@ -629,14 +632,14 @@ class SimilarityAgent:
                 limit=limit
             )
 
-            print(f" Batch Search Qdrant: {len(results)} ensembles de résultats")
+            logger.info("Batch Search Qdrant: %d ensembles de résultats", len(results))
             return {
                 "batch_results": results,
                 "queries_count": len(queries),
                 "search_method": "qdrant_batch_search"
             }
         except Exception as e:
-            print(f" Batch search échoué: {e}")
+            logger.error(" Batch search failed: %s", e)
             return {"batch_results": [], "error": str(e)}
 
     async def search_with_grouping(
@@ -664,7 +667,7 @@ class SimilarityAgent:
             )
 
             total_results = sum(len(items) for items in grouped_results.values())
-            print(f" Grouped Search Qdrant: {len(grouped_results)} groupes, {total_results} résultats")
+            logger.info("Grouped Search Qdrant: %d groupes, {total_results} résultats", len(grouped_results))
 
             return {
                 "grouped_results": grouped_results,
@@ -674,7 +677,7 @@ class SimilarityAgent:
                 "search_method": "qdrant_grouped_search"
             }
         except Exception as e:
-            print(f" Grouped search échoué: {e}")
+            logger.error(" Grouped search failed: %s", e)
             return {"grouped_results": {}, "error": str(e)}
 
     async def search_with_ordering(
@@ -705,7 +708,7 @@ class SimilarityAgent:
                 query_filter=query_filter
             )
 
-            print(f" Ordered Search Qdrant: {len(results)} résultats triés par {order_by_field}")
+            logger.info("Ordered Search Qdrant: %d résultats triés par {order_by_field}", len(results))
             return {
                 "ordered_results": results,
                 "order_by": order_by_field,
@@ -713,7 +716,7 @@ class SimilarityAgent:
                 "search_method": "qdrant_ordered_search"
             }
         except Exception as e:
-            print(f" Ordered search échoué: {e}")
+            logger.error(" Ordered search failed: %s", e)
             return {"ordered_results": [], "error": str(e)}
 
     async def search_with_qdrant_boosting(
@@ -738,14 +741,14 @@ class SimilarityAgent:
                 query_filter=query_filter
             )
 
-            print(f" Boosted Search Qdrant: {len(results)} résultats avec boosting")
+            logger.info("Boosted Search Qdrant: %d résultats avec boosting", len(results))
             return {
                 "boosted_results": results,
                 "boost_factors_applied": boost_factors,
                 "search_method": "qdrant_boosted_search"
             }
         except Exception as e:
-            print(f" Boosted search échoué: {e}")
+            logger.error(" Boosted search failed: %s", e)
             return {"boosted_results": [], "error": str(e)}
 
     async def aggregate_experiments(
@@ -766,7 +769,7 @@ class SimilarityAgent:
                 query_filter=query_filter
             )
 
-            print(f" Aggregate Qdrant: {len(aggregation)} groupes agrégés")
+            logger.info("Aggregate Qdrant: %d groupes agrégés", len(aggregation))
             return {
                 "aggregation": aggregation,
                 "group_by": group_by,
@@ -774,7 +777,7 @@ class SimilarityAgent:
                 "search_method": "qdrant_aggregate"
             }
         except Exception as e:
-            print(f" Aggregation échouée: {e}")
+            logger.error(" Aggregation failed: %s", e)
             return {"aggregation": {}, "error": str(e)}
 
     async def search_temporal_advanced(
@@ -810,14 +813,14 @@ class SimilarityAgent:
                 query_filter=query_filter
             )
 
-            print(f" Temporal Advanced Search Qdrant: {len(results)} résultats")
+            logger.info("Temporal Advanced Search Qdrant: %d résultats", len(results))
             return {
                 "temporal_results": results,
                 "date_range": date_range,
                 "search_method": "qdrant_temporal_advanced"
             }
         except Exception as e:
-            print(f" Temporal advanced search échoué: {e}")
+            logger.error(" Temporal advanced search failed: %s", e)
             return {"temporal_results": [], "error": str(e)}
 
     async def get_experiment_by_id(
@@ -835,10 +838,10 @@ class SimilarityAgent:
             )
 
             if result:
-                print(f" Retrieve Qdrant: expérience {experiment_id} trouvée")
+                logger.info("Retrieve Qdrant: expérience {experiment_id} found")
             return result
         except Exception as e:
-            print(f" Retrieve échoué: {e}")
+            logger.error(" Retrieve failed: %s", e)
             return None
 
     async def scroll_experiments(
@@ -857,7 +860,7 @@ class SimilarityAgent:
                 offset=offset
             )
 
-            print(f" Scroll Qdrant: {len(results)} expériences (offset={offset})")
+            logger.info("Scroll Qdrant: %d expériences (offset={offset})", len(results))
             return {
                 "experiments": results,
                 "offset": offset,
@@ -866,7 +869,7 @@ class SimilarityAgent:
                 "search_method": "qdrant_scroll"
             }
         except Exception as e:
-            print(f" Scroll échoué: {e}")
+            logger.error(" Scroll failed: %s", e)
             return {"experiments": [], "error": str(e)}
 
     async def delete_experiments(
@@ -883,14 +886,14 @@ class SimilarityAgent:
                 points_selector=experiment_ids
             )
 
-            print(f" Delete Qdrant: {len(experiment_ids)} expériences supprimées")
+            logger.info("Delete Qdrant: %d expériences supprimées", len(experiment_ids))
             return {
                 "deleted_ids": experiment_ids,
                 "count": len(experiment_ids),
                 "success": True
             }
         except Exception as e:
-            print(f" Delete échoué: {e}")
+            logger.error(" Delete failed: %s", e)
             return {"deleted_ids": [], "success": False, "error": str(e)}
 
     async def count_experiments(
@@ -908,14 +911,14 @@ class SimilarityAgent:
                 exact=True
             )
 
-            print(f" Count Qdrant: {count} expériences")
+            logger.info("Count Qdrant: %d experiments", count)
             return {
                 "count": count,
                 "collection": collection_name,
                 "filtered": query_filter is not None
             }
         except Exception as e:
-            print(f" Count échoué: {e}")
+            logger.error(" Count failed: %s", e)
             return {"count": 0, "error": str(e)}
 
     async def search_by_multiple_organisms(
@@ -947,14 +950,14 @@ class SimilarityAgent:
                 query_filter=query_filter
             )
 
-            print(f" Multi-organism Search: {len(results)} résultats pour {organisms}")
+            logger.info("Multi-organism Search: %d résultats pour {organisms}", len(results))
             return {
                 "results": results,
                 "organisms_filter": organisms,
                 "search_method": "qdrant_match_any"
             }
         except Exception as e:
-            print(f" Multi-organism search échoué: {e}")
+            logger.error(" Multi-organism search failed: %s", e)
             return {"results": [], "error": str(e)}
 
     async def search_exclude_ids(
@@ -983,14 +986,14 @@ class SimilarityAgent:
                 query_filter=query_filter
             )
 
-            print(f" Exclude IDs Search: {len(results)} résultats (exclu {len(exclude_ids)} IDs)")
+            logger.info("Exclude IDs Search: %d résultats (exclu {len(exclude_ids)} IDs)", len(results))
             return {
                 "results": results,
                 "excluded_ids": exclude_ids,
                 "search_method": "qdrant_exclude_ids"
             }
         except Exception as e:
-            print(f" Exclude IDs search échoué: {e}")
+            logger.error(" Exclude IDs search failed: %s", e)
             return {"results": [], "error": str(e)}
 
     async def search_with_empty_field_filter(
@@ -1030,7 +1033,7 @@ class SimilarityAgent:
             )
 
             action = "excluant" if exclude_empty else "incluant seulement"
-            print(f" Empty Field Filter: {len(results)} résultats {action} {field_name} vide")
+            logger.info("Empty Field Filter: %d résultats {action} {field_name} vide", len(results))
             return {
                 "results": results,
                 "field_filter": field_name,
@@ -1038,7 +1041,7 @@ class SimilarityAgent:
                 "search_method": "qdrant_empty_field_filter"
             }
         except Exception as e:
-            print(f" Empty field filter search échoué: {e}")
+            logger.error(" Empty field filter search failed: %s", e)
             return {"results": [], "error": str(e)}
 
     async def full_qdrant_search(
@@ -1158,7 +1161,7 @@ class SimilarityAgent:
             search_metadata["aggregation_stats"] = aggregation
             search_metadata["features_used"].append("aggregation")
 
-            print(f" Full Qdrant Search: {len(results)} résultats avec {len(search_metadata['features_used'])} fonctionnalités")
+            logger.info("Full Qdrant Search: %d résultats avec {len(search_metadata['features_used'])} fonctionnalités", len(results))
 
             return {
                 "results": results[:limit],
@@ -1166,5 +1169,5 @@ class SimilarityAgent:
                 "search_metadata": search_metadata
             }
         except Exception as e:
-            print(f" Full Qdrant search échoué: {e}")
+            logger.error(" Full Qdrant search failed: %s", e)
             return {"results": [], "error": str(e)}

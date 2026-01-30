@@ -1,30 +1,92 @@
+import asyncio
+import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from backend.services.qdrant_service import get_qdrant_service
+
+logger = logging.getLogger("biomemory.evidence")
+
+# Max neighbors to run corroboration on (to limit Qdrant calls)
+MAX_CORROBORATION_NEIGHBORS = 5
+
+
 class EvidenceAgent:
     def __init__(self):
         self.qdrant = get_qdrant_service()
+
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         neighbors = context.get('reranked_neighbors', [])
         variants = context.get('design_variants', [])
         user_id = context.get('user_id')
         evidence_map = {}
-        for neighbor in neighbors:
-            neighbor_id = neighbor.get('id')
-            evidence_map[neighbor_id] = await self._build_experiment_evidence(
-                neighbor, user_id
-            )
+
+        # Build evidence for neighbors (batch corroboration for top N only)
+        corroboration_neighbors = neighbors[:MAX_CORROBORATION_NEIGHBORS]
+        remaining_neighbors = neighbors[MAX_CORROBORATION_NEIGHBORS:]
+
+        # Run corroboration in parallel for top neighbors
+        if corroboration_neighbors:
+            corr_tasks = [
+                self._build_experiment_evidence(n, user_id)
+                for n in corroboration_neighbors
+            ]
+            corr_results = await asyncio.gather(*corr_tasks, return_exceptions=True)
+            for neighbor, result in zip(corroboration_neighbors, corr_results):
+                nid = neighbor.get('id')
+                if isinstance(result, Exception):
+                    logger.error("Evidence build failed for %s: %s", nid, result)
+                    evidence_map[nid] = self._default_evidence(neighbor)
+                else:
+                    evidence_map[nid] = result
+
+        # Remaining neighbors get lightweight evidence (no corroboration)
+        for neighbor in remaining_neighbors:
+            nid = neighbor.get('id')
+            evidence_map[nid] = self._build_lightweight_evidence(neighbor)
+
         for variant in variants:
             variant_id = variant.get('id')
             evidence_map[variant_id] = await self._build_variant_evidence(variant)
+
         traceability_stats = await self._compute_advanced_traceability_stats(evidence_map)
         corroboration_map = await self._build_corroboration_evidence(evidence_map, user_id)
+
+        logger.info("Evidence built for %d items (%d full, %d lightweight)",
+                     len(evidence_map), len(corroboration_neighbors), len(remaining_neighbors))
         return {
             'evidence_map': evidence_map,
             'corroboration_map': corroboration_map,
             'traceability_verified': True,
             'traceability_stats': traceability_stats,
             'confidence_assessment': self._assess_overall_confidence(evidence_map)
+        }
+
+    def _default_evidence(self, neighbor: Dict) -> Dict[str, Any]:
+        payload = neighbor.get('payload', {})
+        return {
+            'item_type': 'experiment',
+            'source_type': payload.get('source_type', 'unknown'),
+            'source': payload.get('source', 'no_source'),
+            'similarity_score': neighbor.get('score', 0.0),
+            'verification_status': 'unverified',
+            'confidence_score': 0.3,
+            'corroboration': {'similar_experiments': [], 'consensus_strength': 0.0}
+        }
+
+    def _build_lightweight_evidence(self, neighbor: Dict) -> Dict[str, Any]:
+        """Build evidence without corroboration (for lower-ranked results)."""
+        payload = neighbor.get('payload', {})
+        return {
+            'item_type': 'experiment',
+            'source_type': payload.get('source_type', 'unknown'),
+            'source': payload.get('source', 'no_source'),
+            'publication': self._extract_publication_info(payload),
+            'similarity_score': neighbor.get('score', 0.0),
+            'reranked_score': neighbor.get('final_score', 0.0),
+            'database_origin': neighbor.get('source_db', 'unknown'),
+            'verification_status': self._verify_source_credibility(payload),
+            'confidence_score': 0.4,  # Lower without corroboration
+            'corroboration': {'similar_experiments': [], 'consensus_strength': 0.0}
         }
     async def _build_experiment_evidence(
         self,
@@ -346,7 +408,7 @@ class EvidenceAgent:
             )
             return count
         except Exception as e:
-            print(f" Count recent similar failed: {e}")
+            logger.error("Count recent similar failed: %s", e)
             return 0
 
     async def _aggregate_similar_results(self, similar_ids: List[str]) -> Dict[str, Any]:
@@ -374,7 +436,7 @@ class EvidenceAgent:
                 'success_count': success_count
             }
         except Exception as e:
-            print(f" Aggregate similar results failed: {e}")
+            logger.error("Aggregate similar results failed: %s", e)
             return {'success_rate': 0.5}
 
     async def _verify_supporting_experiments(self, experiment_ids: List[str]) -> Dict[str, Any]:
@@ -410,7 +472,7 @@ class EvidenceAgent:
                 'experiments': verified_experiments
             }
         except Exception as e:
-            print(f" Verify supporting experiments failed: {e}")
+            logger.error("Verify supporting experiments failed: %s", e)
             return {'verified_count': len(experiment_ids), 'success_rate': 0.7}
 
     async def _calculate_condition_consensus(
@@ -452,7 +514,7 @@ class EvidenceAgent:
                 'conditions_validated': conditions_match
             }
         except Exception as e:
-            print(f" Calculate condition consensus failed: {e}")
+            logger.error("Calculate condition consensus failed: %s", e)
             return {'agreement_score': 0.8, 'success_rate': 0.6}
 
     async def get_aggregated_statistics(
@@ -485,7 +547,7 @@ class EvidenceAgent:
                 "aggregation_method": "qdrant_aggregate"
             }
         except Exception as e:
-            print(f" Get aggregated statistics failed: {e}")
+            logger.error("Get aggregated statistics failed: %s", e)
             return {"total_experiments": 0, "error": str(e)}
     def _assess_source_credibility(self, payload: Dict[str, Any]) -> float:
         verification = self._verify_source_credibility(payload)

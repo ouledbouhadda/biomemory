@@ -5,6 +5,25 @@ import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 
+// Simple in-memory response cache with TTL
+const _responseCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getCached(key) {
+  const entry = _responseCache.get(key);
+  if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data;
+  if (entry) _responseCache.delete(key);
+  return null;
+}
+
+function putCache(key, data) {
+  if (_responseCache.size > 200) {
+    const oldest = _responseCache.keys().next().value;
+    _responseCache.delete(oldest);
+  }
+  _responseCache.set(key, { data, ts: Date.now() });
+}
+
 // Create axios instance with default config
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -99,7 +118,10 @@ export const experimentsAPI = {
   },
 
   getStats: async () => {
+    const cached = getCached('stats_summary');
+    if (cached) return cached;
     const response = await apiClient.get('/experiments/stats/summary');
+    putCache('stats_summary', response.data);
     return response.data;
   },
 };
@@ -107,7 +129,11 @@ export const experimentsAPI = {
 // Search API
 export const searchAPI = {
   search: async (query) => {
+    const key = 'search_' + JSON.stringify(query);
+    const cached = getCached(key);
+    if (cached) return cached;
     const response = await apiClient.post('/search/', query);
+    putCache(key, response.data);
     return response.data;
   },
 
@@ -176,7 +202,10 @@ export const designAPI = {
 // Health API
 export const healthAPI = {
   check: async () => {
+    const cached = getCached('health');
+    if (cached) return cached;
     const response = await apiClient.get('/health');
+    putCache('health', response.data);
     return response.data;
   },
 };

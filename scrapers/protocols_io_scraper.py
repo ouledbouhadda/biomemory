@@ -2,9 +2,9 @@ import re
 import time
 import json
 import requests
+from bs4 import BeautifulSoup
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-import re
 from backend.models.scraped_experiment import (
     ScrapedExperiment,
     ExperimentConditions,
@@ -223,4 +223,137 @@ class ProtocolsIOScraper:
                 time.sleep(1)
             except Exception as e:
                 print(f"Error with protocol {protocol_id}: {e}")
+        return experiments
+
+    def _scrape_protocol_page_bs4(self, protocol_url: str) -> Optional[Dict[str, Any]]:
+        """Scrape a protocols.io protocol page using BeautifulSoup as fallback/enrichment."""
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; biomemory/0.1)",
+                "Accept": "text/html,application/xhtml+xml",
+            }
+            r = requests.get(protocol_url, headers=headers, timeout=20)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            title = ""
+            title_tag = soup.find("h1") or soup.find("meta", {"property": "og:title"})
+            if title_tag:
+                title = title_tag.get_text(strip=True) if title_tag.name == "h1" else title_tag.get("content", "")
+
+            description = ""
+            desc_meta = soup.find("meta", {"property": "og:description"}) or soup.find("meta", {"name": "description"})
+            if desc_meta:
+                description = desc_meta.get("content", "")
+
+            # Extract steps from protocol content
+            steps_text = []
+            step_elements = soup.find_all(["div", "section"], class_=lambda c: c and "step" in str(c).lower())
+            if not step_elements:
+                step_elements = soup.find_all("div", class_=lambda c: c and "protocol" in str(c).lower())
+            for el in step_elements:
+                txt = el.get_text(separator=" ", strip=True)
+                if len(txt) > 20:
+                    steps_text.append(txt)
+
+            # If no structured steps found, extract from main content
+            if not steps_text:
+                main = soup.find("main") or soup.find("article") or soup.find("div", {"id": "protocol"})
+                if main:
+                    for p in main.find_all(["p", "li"]):
+                        txt = p.get_text(strip=True)
+                        if len(txt) > 20:
+                            steps_text.append(txt)
+
+            full_text = f"{title} {description} {' '.join(steps_text)}"
+            conditions = self._extract_conditions_from_text(full_text)
+
+            # Extract authors
+            authors = []
+            author_els = soup.find_all("a", class_=lambda c: c and "author" in str(c).lower())
+            if not author_els:
+                author_els = soup.find_all("meta", {"name": "author"})
+            for a in author_els:
+                name = a.get_text(strip=True) if a.name == "a" else a.get("content", "")
+                if name:
+                    authors.append(name)
+
+            # Extract DOI
+            doi = None
+            doi_tag = soup.find("a", href=lambda h: h and "doi.org" in h)
+            if doi_tag:
+                doi = doi_tag.get("href", "").replace("https://doi.org/", "")
+
+            return {
+                "title": title,
+                "description": full_text[:2000],
+                "steps_text": steps_text,
+                "conditions": conditions,
+                "authors": authors,
+                "doi": doi,
+                "url": protocol_url,
+                "steps_count": len(steps_text),
+            }
+        except Exception as e:
+            print(f"BS4 scrape failed for {protocol_url}: {e}")
+            return None
+
+    def scrape_bs4(self, query: str, limit: int = 5) -> List[ScrapedExperiment]:
+        """Scrape protocols using BeautifulSoup by first searching via API then parsing HTML pages."""
+        protocols = self._search_protocols(query, limit)
+        experiments = []
+        print(f"[BS4] Found {len(protocols)} protocols, scraping HTML pages...")
+
+        for protocol in protocols:
+            try:
+                protocol_id = protocol.get("id") or protocol.get("uri")
+                if not protocol_id:
+                    continue
+
+                protocol_url = f"https://www.protocols.io/view/{protocol_id}"
+                data = self._scrape_protocol_page_bs4(protocol_url)
+                if not data or len(data.get("description", "")) < 30:
+                    continue
+
+                extracted = data["conditions"]
+
+                experiment = ScrapedExperiment(
+                    experiment_id=f"protocols_io_bs4_{protocol_id}",
+                    description=data["description"],
+                    sequence="",
+                    conditions=ExperimentConditions(
+                        ph=extracted.get("ph"),
+                        temperature=extracted.get("temperature"),
+                        organism=extracted.get("organism"),
+                        assay=protocol.get("protocol_type"),
+                        additional={
+                            "duration": extracted.get("duration"),
+                            "concentration": extracted.get("concentration"),
+                            "volume": extracted.get("volume"),
+                            "steps_count": data["steps_count"],
+                            "scrape_method": "beautifulsoup",
+                        }
+                    ),
+                    outcome=ExperimentOutcome(
+                        status="unknown",
+                        notes=f"Scraped via BeautifulSoup - {data['steps_count']} steps extracted",
+                        metrics={}
+                    ),
+                    evidence=ExperimentEvidence(
+                        paper_title=data.get("title"),
+                        doi=data.get("doi"),
+                        arxiv_link=None,
+                        protocol_url=protocol_url,
+                        authors=data.get("authors", []),
+                        publication_date=None
+                    ),
+                    source="protocols.io",
+                    scraped_at=datetime.utcnow()
+                )
+                experiments.append(experiment)
+                time.sleep(1.5)
+            except Exception as e:
+                print(f"[BS4] Error with protocol {protocol_id}: {e}")
+
+        print(f"[BS4] Successfully scraped {len(experiments)} experiments")
         return experiments

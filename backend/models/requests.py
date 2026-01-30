@@ -18,6 +18,7 @@ class ExperimentConditions(BaseModel):
     ph: Optional[float] = Field(None, ge=0, le=14, description="pH value")
     protocol_id: Optional[str] = Field(None, description="Protocol reference ID")
     additional_params: Optional[Dict[str, Any]] = Field(None, description="Additional experimental parameters")
+    success_only: Optional[bool] = Field(None, description="Filter to only successful experiments")
     
     @field_validator('temperature', 'ph', mode='before')
     @classmethod

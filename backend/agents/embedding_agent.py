@@ -44,6 +44,7 @@ class EmbeddingAgent:
                     'success': experiment.get('success'),
                     'source': experiment.get('source', 'user_upload'),
                     'notes': experiment.get('notes'),
+                    'image_base64': experiment.get('image_base64'),
                     'created_at': context.get('user_input', {}).get('timestamp', None),
                     'chunked': False
                 }
@@ -96,6 +97,7 @@ class EmbeddingAgent:
                 'success': experiment.get('success'),
                 'source': experiment.get('source', 'user_upload'),
                 'notes': experiment.get('notes'),
+                'image_base64': experiment.get('image_base64') if i == 0 else None,
                 'created_at': context.get('user_input', {}).get('timestamp', None),
 
                 'chunked': True,
@@ -140,6 +142,7 @@ class EmbeddingAgent:
                     'success': experiment.get('success'),
                     'source': experiment.get('source', 'user_upload'),
                     'notes': experiment.get('notes'),
+                    'image_base64': experiment.get('image_base64'),
                     'created_at': context.get('user_input', {}).get('timestamp', None),
                     'chunked': True,
                     'is_parent': True,

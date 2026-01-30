@@ -15,7 +15,9 @@ export default function ExperimentUpload({ onUploadSuccess }) {
     ph: '',
     success: true,
     notes: '',
+    image: null,
   });
+  const [imagePreview, setImagePreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [uploadedId, setUploadedId] = useState(null);
@@ -31,6 +33,18 @@ export default function ExperimentUpload({ onUploadSuccess }) {
   };
 
   const handleChange = (e) => {
+    if (e.target.type === 'file') {
+      const file = e.target.files[0];
+      setFormData({ ...formData, image: file });
+      if (file) {
+        const reader = new FileReader();
+        reader.onloadend = () => setImagePreview(reader.result);
+        reader.readAsDataURL(file);
+      } else {
+        setImagePreview(null);
+      }
+      return;
+    }
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     setFormData({
       ...formData,
@@ -61,6 +75,17 @@ export default function ExperimentUpload({ onUploadSuccess }) {
         delete experimentData.conditions;
       }
 
+      // Ajout image en base64 si présente
+      if (formData.image) {
+        const toBase64 = file => new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result); // Garder tout le data:image/...
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        experimentData.image_base64 = await toBase64(formData.image);
+      }
+
       const result = await experimentsAPI.upload(experimentData);
       setUploadedId(result.experiment_id);
 
@@ -73,7 +98,9 @@ export default function ExperimentUpload({ onUploadSuccess }) {
         ph: '',
         success: true,
         notes: '',
+        image: null,
       });
+      setImagePreview(null);
 
       onUploadSuccess();
     } catch (err) {
@@ -202,6 +229,20 @@ export default function ExperimentUpload({ onUploadSuccess }) {
             style={styles.textarea}
             rows={3}
           />
+        </div>
+
+        {/* Image Upload */}
+        <div style={styles.field}>
+          <label style={styles.label}>Attach Image (optional)</label>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={handleChange}
+            style={styles.input}
+          />
+          {imagePreview && (
+            <img src={imagePreview} alt="Preview" style={{ maxWidth: '200px', marginTop: '1rem', borderRadius: '8px' }} />
+          )}
         </div>
 
         {/* Error Display */}

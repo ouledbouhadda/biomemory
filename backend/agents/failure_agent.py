@@ -26,24 +26,44 @@ class FailureAgent:
             'recommendations': recommendations
         }
     def _identify_failures(self, neighbors: List[Dict]) -> List[Dict]:
+        # Only consider explicitly failed experiments (success=False)
+        # Skip experiments where success field is absent (None)
         return [
             n for n in neighbors
-            if not n['payload'].get('success', True)
+            if n.get('payload', {}).get('success') is False
         ]
     def _compute_reproducibility_risk(self, neighbors: List[Dict]) -> float:
         if len(neighbors) < 3:
             return 0.5
+
+        # Score-based risk: low similarity = less studied area = higher risk
+        scores = [n.get('score', 0.0) for n in neighbors if n.get('score')]
+        score_risk = 0.3
+        if scores:
+            mean_score = float(np.mean(scores))
+            score_variance = float(np.var(scores))
+            score_risk = score_variance * 0.3 + (1.0 - mean_score) * 0.5 + 0.05
+            score_risk = min(1.0, max(0.0, score_risk))
+
+        # Outcome-based risk: failure rate among neighbors
         outcomes = []
         for n in neighbors:
             success = n['payload'].get('success')
             if success is not None:
                 outcomes.append(1.0 if success else 0.0)
+
         if not outcomes:
-            return 0.5
-        variance = np.var(outcomes)
-        failure_rate = 1.0 - np.mean(outcomes)
-        risk = (variance * 0.5 + failure_rate * 0.5)
-        return min(1.0, risk)
+            return score_risk
+
+        outcome_variance = float(np.var(outcomes))
+        failure_rate = 1.0 - float(np.mean(outcomes))
+        outcome_risk = outcome_variance * 0.5 + failure_rate * 0.5
+
+        # Blend: outcome (60%) + score distribution (40%)
+        # Ensures non-zero risk even when all experiments succeed,
+        # because low similarity scores indicate uncertainty
+        blended = outcome_risk * 0.6 + score_risk * 0.4
+        return min(1.0, max(0.0, blended))
     def _analyze_failure_patterns(self, failures: List[Dict]) -> Dict[str, Any]:
         if not failures:
             return {
@@ -105,6 +125,16 @@ class FailureAgent:
                 "High reproducibility risk detected. "
                 "Consider additional replicates and controls."
             )
+        elif risk_level == "MEDIUM":
+            recommendations.append(
+                "Moderate variability in similar experiments. "
+                "Document conditions precisely and include controls."
+            )
+        elif risk_level == "LOW":
+            recommendations.append(
+                "Similar experiments show consistent results. "
+                "Standard protocol controls should suffice."
+            )
         common_orgs = failure_patterns.get('common_organisms', {})
         if common_orgs:
             most_common = max(common_orgs.items(), key=lambda x: x[1])
@@ -116,7 +146,13 @@ class FailureAgent:
         if temp_range and temp_range.get('min') is not None:
             recommendations.append(
                 f"Failed experiments temperature range: "
-                f"{temp_range['min']:.1f}°C - {temp_range['max']:.1f}°C. "
+                f"{temp_range['min']:.1f} - {temp_range['max']:.1f}. "
                 f"Consider adjusting temperature."
+            )
+        # If no failure data, add generic recommendations
+        if not recommendations:
+            recommendations.append(
+                "No explicit outcome data available for similar experiments. "
+                "Consider verifying results with independent methods."
             )
         return recommendations

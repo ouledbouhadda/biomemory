@@ -1,11 +1,28 @@
+import logging
 from typing import Dict, Any, List
-from backend.services.embedding_service import get_embedding_service
+from backend.services.embedding_service import get_embedding_service, expand_query
+
+logger = logging.getLogger("biomemory.multimodal_search")
+
+
 class MultimodalSearchAgent:
     def __init__(self):
         self.embedding_service = get_embedding_service()
+
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         user_input = context.get('user_input', {})
         query = user_input.get('query', user_input.get('experiment', {}))
+
+        # Query expansion with biological synonyms
+        original_text = query.get('text', '')
+        if original_text:
+            expanded_text = expand_query(original_text)
+            query = dict(query)
+            query['text'] = expanded_text
+            query['original_text'] = original_text
+            if expanded_text != original_text:
+                logger.info("Query expanded: '%s' -> '%s'", original_text[:50], expanded_text[:80])
+
         modalities = self._detect_modalities(query)
         embedding = await self._generate_adaptive_embedding(query, modalities)
         search_strategy = self._determine_advanced_search_strategy(modalities, query)
@@ -48,8 +65,12 @@ class MultimodalSearchAgent:
                 conditions=query.get('conditions')
             )
         elif modalities['has_image'] and not modalities['has_text'] and not modalities['has_sequence']:
+            # Image-only search: use CLIP to generate a text description of the image,
+            # then search using that text (stored vectors are 488-dim text-based, no image component)
+            image_description = self.embedding_service.describe_image(query.get('image_base64'))
+            logger.info("Image-only search: CLIP description = '%s'", image_description[:100] if image_description else 'empty')
             return await self.embedding_service.generate_multimodal_embedding(
-                image_base64=query.get('image_base64'),
+                text=image_description if image_description else "biological experiment",
                 conditions=query.get('conditions')
             )
         elif modalities['has_text'] and modalities['has_sequence']:
@@ -59,23 +80,34 @@ class MultimodalSearchAgent:
                 conditions=query.get('conditions')
             )
         elif modalities['has_text'] and modalities['has_image']:
+            # Text+Image: enrich text with CLIP image description for better matching
+            image_description = self.embedding_service.describe_image(query.get('image_base64'))
+            combined_text = query.get('text', '')
+            if image_description:
+                combined_text = f"{combined_text} {image_description}"
             return await self.embedding_service.generate_multimodal_embedding(
-                text=query.get('text'),
-                image_base64=query.get('image_base64'),
+                text=combined_text,
                 conditions=query.get('conditions')
             )
         elif modalities['has_image'] and modalities['has_sequence']:
+            # Sequence+Image: use CLIP description as text component
+            image_description = self.embedding_service.describe_image(query.get('image_base64'))
             return await self.embedding_service.generate_multimodal_embedding(
+                text=image_description if image_description else None,
                 sequence=query.get('sequence'),
-                image_base64=query.get('image_base64'),
                 conditions=query.get('conditions')
             )
         else:
+            # Full multimodal: enrich text with CLIP image description if image present
+            text = query.get('text', '')
+            if modalities['has_image']:
+                image_description = self.embedding_service.describe_image(query.get('image_base64'))
+                if image_description:
+                    text = f"{text} {image_description}" if text else image_description
             return await self.embedding_service.generate_multimodal_embedding(
-                text=query.get('text'),
+                text=text or None,
                 sequence=query.get('sequence'),
-                conditions=query.get('conditions'),
-                image_base64=query.get('image_base64')
+                conditions=query.get('conditions')
             )
     def _determine_search_strategy(self, modalities: Dict[str, bool]) -> str:
         modal_count = sum(1 for v in modalities.values() if v)

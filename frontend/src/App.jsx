@@ -14,9 +14,24 @@ export default function App() {
   const [registerForm, setRegisterForm] = useState({ email: '', password: '', fullName: '' });
   const [error, setError] = useState(null);
 
+  // Set initial mode from URL path
   useEffect(() => {
+    const path = window.location.pathname;
+    if (path === '/register') setIsRegisterMode(true);
     checkAuth();
   }, []);
+
+  // Update URL when view changes
+  useEffect(() => {
+    if (isLoading) return;
+    if (isAuthenticated) {
+      window.history.replaceState(null, '', '/dashboard');
+    } else if (isRegisterMode) {
+      window.history.replaceState(null, '', '/register');
+    } else {
+      window.history.replaceState(null, '', '/login');
+    }
+  }, [isAuthenticated, isRegisterMode, isLoading]);
 
   const checkAuth = async () => {
     const token = localStorage.getItem('access_token');

@@ -8,6 +8,7 @@ class ExperimentResponse(BaseModel):
     conditions: Optional[Dict[str, Any]] = None
     success: Optional[bool] = None
     notes: Optional[str] = None
+    image_base64: Optional[str] = None
     embedding_metadata: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     message: Optional[str] = None

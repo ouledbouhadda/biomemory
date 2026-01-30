@@ -11,10 +11,22 @@ settings = get_settings()
 async def main():
     print(" Starting protocols.io scraper...")
     scraper = ProtocolsIOScraper(api_token=settings.PROTOCOLS_IO_API_TOKEN)
+    # Method 1: API-based scraping
     experiments = scraper.scrape(
         query="protein expression",
         limit=50
     )
+    print(f"API scraper: {len(experiments)} experiments")
+
+    # Method 2: BeautifulSoup HTML scraping for additional data
+    bs4_experiments = scraper.scrape_bs4(
+        query="protein purification",
+        limit=20
+    )
+    print(f"BS4 scraper: {len(bs4_experiments)} experiments")
+
+    experiments.extend(bs4_experiments)
+
     if not experiments:
         print("No experiments found")
         return
@@ -48,7 +60,3 @@ async def main():
     print("Done!")
 if __name__ == "__main__":
     asyncio.run(main())
-if __name__ == "__main__":
-    asyncio.run(main())
-if __name__ == "__main__":
-    main()

@@ -40,16 +40,121 @@ from qdrant_client.models import (
     ContextQuery
 )
 from typing import List, Dict, Any, Optional, Union
+from collections import OrderedDict
 from backend.config.settings import get_settings
 import numpy as np
+import hashlib
+import json
+import logging
+import time
 from datetime import datetime, timedelta
+
+logger = logging.getLogger("biomemory.qdrant")
 settings = get_settings()
-settings = get_settings()
+
+
+class QdrantCache:
+    """TTL-based LRU cache for Qdrant query results."""
+
+    def __init__(self, max_size: int = 256, ttl_seconds: int = 300):
+        self._cache: OrderedDict = OrderedDict()
+        self._timestamps: Dict[str, float] = {}
+        self._max_size = max_size
+        self._ttl = ttl_seconds
+        self._hits = 0
+        self._misses = 0
+
+    def _make_key(self, *args) -> str:
+        raw = json.dumps(args, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def get(self, key: str):
+        if key in self._cache:
+            if time.time() - self._timestamps[key] < self._ttl:
+                self._cache.move_to_end(key)
+                self._hits += 1
+                return self._cache[key]
+            else:
+                del self._cache[key]
+                del self._timestamps[key]
+        self._misses += 1
+        return None
+
+    def put(self, key: str, value):
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        else:
+            if len(self._cache) >= self._max_size:
+                oldest_key, _ = self._cache.popitem(last=False)
+                self._timestamps.pop(oldest_key, None)
+        self._cache[key] = value
+        self._timestamps[key] = time.time()
+
+    def invalidate(self):
+        self._cache.clear()
+        self._timestamps.clear()
+
+    @property
+    def stats(self) -> Dict[str, Any]:
+        total = self._hits + self._misses
+        return {
+            "size": len(self._cache),
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": round(self._hits / total, 3) if total > 0 else 0.0
+        }
+
+
+class CircuitBreaker:
+    """Circuit breaker to handle Qdrant Cloud outages gracefully."""
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 60):
+        self._failure_count = 0
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout = recovery_timeout
+        self._last_failure_time = 0.0
+        self._state = "closed"  # closed, open, half-open
+
+    @property
+    def is_open(self) -> bool:
+        if self._state == "open":
+            if time.time() - self._last_failure_time > self._recovery_timeout:
+                self._state = "half-open"
+                return False
+            return True
+        return False
+
+    def record_success(self):
+        self._failure_count = 0
+        self._state = "closed"
+
+    def record_failure(self):
+        self._failure_count += 1
+        self._last_failure_time = time.time()
+        if self._failure_count >= self._failure_threshold:
+            self._state = "open"
+            logger.warning("Circuit breaker OPEN after %d failures", self._failure_count)
+
+    @property
+    def state(self) -> str:
+        # Re-check for half-open transition
+        if self._state == "open" and time.time() - self._last_failure_time > self._recovery_timeout:
+            self._state = "half-open"
+        return self._state
+
+
 class QdrantService:
     def __init__(self):
         self.cloud_client = None
-        print(f"QDRANT_CLOUD_URL: {settings.QDRANT_CLOUD_URL}")
-        print(f"QDRANT_CLOUD_API_KEY: {'SET' if settings.QDRANT_CLOUD_API_KEY else 'NOT SET'}")
+        self._cloud_circuit = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
+        self._search_cache = QdrantCache(max_size=256, ttl_seconds=300)
+        self._stats_cache = QdrantCache(max_size=32, ttl_seconds=600)
+        self._facets_cache = QdrantCache(max_size=64, ttl_seconds=600)
+        self._scroll_cache = QdrantCache(max_size=64, ttl_seconds=300)
+
+        if settings.DEBUG:
+            logger.debug("QDRANT_CLOUD_URL: %s", settings.QDRANT_CLOUD_URL)
+            logger.debug("QDRANT_CLOUD_API_KEY: %s", 'SET' if settings.QDRANT_CLOUD_API_KEY else 'NOT SET')
 
         if (settings.QDRANT_CLOUD_URL and settings.QDRANT_CLOUD_API_KEY and
             settings.QDRANT_CLOUD_URL != "https://your-cluster.qdrant.io" and
@@ -58,18 +163,17 @@ class QdrantService:
                 self.cloud_client = QdrantClient(
                     url=settings.QDRANT_CLOUD_URL,
                     api_key=settings.QDRANT_CLOUD_API_KEY,
-                    timeout=30
+                    timeout=30,
+                    prefer_grpc=True
                 )
                 collections = self.cloud_client.get_collections()
-                print(f"Qdrant Cloud client initialized - {len(collections.collections)} collections found")
+                logger.info("Qdrant Cloud initialized - %d collections", len(collections.collections))
                 for col in collections.collections:
-                    print(f"   Collection: {col.name}")
+                    logger.info("  Collection: %s", col.name)
             except Exception as e:
-                print(f"Qdrant Cloud unavailable: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error("Qdrant Cloud unavailable: %s", e)
         else:
-            print("Qdrant Cloud not configured (using placeholder values")
+            logger.info("Qdrant Cloud not configured")
         try:
             self.private_client = QdrantClient(
                 host=settings.QDRANT_PRIVATE_HOST,
@@ -77,7 +181,7 @@ class QdrantService:
                 timeout=30
             )
         except Exception as e:
-            print(f"Qdrant Private unavailable: {e}")
+            logger.warning("Qdrant Private unavailable: %s", e)
             self.private_client = None
         self.vector_size = settings.total_vector_dim
         self.hnsw_config = {
@@ -128,156 +232,13 @@ class QdrantService:
                     }
                 }
                 self.cloud_client.create_collection(
-                    collection_name="public_experiments",
-                    **collection_config
-                )
-                self._setup_payload_schema(self.cloud_client, "public_experiments")
-                print("Collection 'public_experiments' created with advanced features")
-                try:
-                    self.cloud_client.create_collection(
-                        collection_name="biomemory_experiments",
-                        **collection_config
-                    )
-                    self._setup_payload_schema(self.cloud_client, "biomemory_experiments")
-                    print("Collection 'biomemory_experiments' created with advanced features")
-                except Exception as e:
-                    print(f"Collection 'biomemory_experiments' already exists: {e}")
-            except Exception as e:
-                print(f"Collection 'public_experiments' already exists or error: {e}")
-        if self.private_client:
-            try:
-                collection_config = {
-                    "vectors": VectorParams(
-                        size=self.vector_size,
-                        distance=Distance.COSINE,
-                        hnsw_config=HnswConfigDiff(**self.hnsw_config),
-                        quantization_config=QuantizationConfig(**self.quantization_config),
-                        on_disk=False
-                    ),
-                    "optimizers_config": OptimizersConfigDiff(**self.optimizers_config),
-                    "wal_config": WalConfigDiff(wal_capacity_mb=32, wal_segments_ahead=2),
-                    "shard_number": 2,
-                    "replication_factor": 1,
-                    "sparse_vectors": {
-                        "text_keywords": SparseIndexParams(
-                            index_type="keyword",
-                            tokenizer=TokenizerType.WORD,
-                            lowercase=True,
-                            min_token_len=2,
-                            max_token_len=20
-                        )
-                    }
-                }
-                self.private_client.create_collection(
-                    collection_name="private_experiments_template",
-                    **collection_config
-                )
-                self._setup_payload_schema(self.private_client, "private_experiments_template")
-                print("✓ Collection template 'private_experiments_template' créée")
-            except Exception as e:
-                print(f"ℹCollection template existe déjà ou erreur: {e}")
-    def _setup_payload_schema(self, client: QdrantClient, collection_name: str):
-        try:
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="title",
-                field_schema=TextIndexParams(
-                    type=PayloadSchemaType.TEXT,
-                    tokenizer=TokenizerType.WORD,
-                    lowercase=True,
-                    min_token_len=2
-                )
-            )
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="abstract",
-                field_schema=TextIndexParams(
-                    type=PayloadSchemaType.TEXT,
-                    tokenizer=TokenizerType.WORD,
-                    lowercase=True,
-                    min_token_len=2
-                )
-            )
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="domain",
-                field_schema=PayloadSchemaType.KEYWORD
-            )
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="experiment_type",
-                field_schema=PayloadSchemaType.KEYWORD
-            )
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="organism",
-                field_schema=PayloadSchemaType.KEYWORD
-            )
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="temperature",
-                field_schema=PayloadSchemaType.FLOAT
-            )
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="ph",
-                field_schema=PayloadSchemaType.FLOAT
-            )
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="confidence_score",
-                field_schema=PayloadSchemaType.FLOAT
-            )
-            client.create_payload_index(
-                collection_name=collection_name,
-                field_name="publication_date",
-                field_schema=PayloadSchemaType.DATETIME
-            )
-            print(f"✓ Schéma de payload configuré pour {collection_name}")
-        except Exception as e:
-            print(f" Erreur lors de la configuration du schéma: {e}")
-            try:
-                client.create_collection(
-                    collection_name="private_experiments",
-                    vectors_config=VectorParams(
-                        size=self.vector_size,
-                        distance=Distance.COSINE
-                    )
-                )
-                print("✓ Collection 'private_experiments' créée (fallback)")
-            except Exception as e2:
-                print(f" Échec création collection fallback: {e2}")
-    async def init_collections(self):
-        if self.cloud_client:
-            try:
-                collection_config = {
-                    "vectors": VectorParams(
-                        size=self.vector_size,
-                        distance=Distance.COSINE,
-                        hnsw_config=HnswConfigDiff(**self.hnsw_config),
-                        quantization_config=QuantizationConfig(**self.quantization_config),
-                        on_disk=False
-                    ),
-                    "optimizers_config": OptimizersConfigDiff(**self.optimizers_config),
-                    "wal_config": WalConfigDiff(wal_capacity_mb=32, wal_segments_ahead=2),
-                    "sparse_vectors": {
-                        "text_keywords": SparseIndexParams(
-                            index_type="keyword",
-                            tokenizer=TokenizerType.WORD,
-                            lowercase=True,
-                            min_token_len=2,
-                            max_token_len=20
-                        )
-                    }
-                }
-                self.cloud_client.create_collection(
                     collection_name="public_science",
                     **collection_config
                 )
                 self._setup_payload_schema(self.cloud_client, "public_science")
-                print("✓ Collection 'public_science' créée avec fonctionnalités avancées")
+                logger.info("Collection 'public_science' created with advanced features")
             except Exception as e:
-                print(f"ℹ️ Collection 'public_science' existe déjà ou erreur: {e}")
+                logger.info("Collection 'public_science' already exists or error: %s", e)
         if self.private_client:
             try:
                 collection_config = {
@@ -307,7 +268,7 @@ class QdrantService:
                     **collection_config
                 )
                 self._setup_payload_schema(self.private_client, "private_experiments")
-                print("✓ Collection 'private_experiments' créée avec fonctionnalités avancées")
+                logger.info("Collection 'private_experiments' created with advanced features")
                 self.private_client.create_collection(
                     collection_name="biomemory_users",
                     vectors_config=VectorParams(
@@ -315,9 +276,9 @@ class QdrantService:
                         distance=Distance.COSINE
                     )
                 )
-                print("✓ Collection 'biomemory_users' créée")
+                logger.info("Collection 'biomemory_users' created")
             except Exception as e:
-                print(f"ℹ️ Collections privées existent déjà ou erreur: {e}")
+                logger.info("Private collections already exist or error: %s", e)
     def _setup_payload_schema(self, client: QdrantClient, collection_name: str):
         try:
             client.create_payload_index(
@@ -400,9 +361,9 @@ class QdrantService:
                 field_name="scraped_at",
                 field_schema=PayloadSchemaType.DATETIME
             )
-            print(f"✓ Schéma de payload configuré pour {collection_name}")
+            logger.info("Payload schema configured for %s", collection_name)
         except Exception as e:
-            print(f" Erreur lors de la configuration du schéma: {e}")
+            logger.error("Payload schema configuration error: %s", e)
             try:
                 client.create_collection(
                     collection_name="private_experiments",
@@ -411,10 +372,10 @@ class QdrantService:
                         distance=Distance.COSINE
                     )
                 )
-                print("✓ Collection 'private_experiments' créée (fallback)")
+                logger.info("Collection 'private_experiments' created (fallback)")
             except Exception as e2:
-                print(f" Échec création collection fallback: {e2}")
-                print(f"ℹ Collection 'private_experiments' already exists or error: {e}")
+                logger.error("Fallback collection creation failed: %s", e2)
+                logger.error("Collection 'private_experiments' already exists or error: %s", e)
     async def upsert(
         self,
         collection_name: str,
@@ -433,6 +394,10 @@ class QdrantService:
             collection_name=collection_name,
             points=point_structs
         )
+        # Invalidate caches after data mutation
+        self._search_cache.invalidate()
+        self._stats_cache.invalidate()
+        self._facets_cache.invalidate()
     async def search(
         self,
         collection_name: str,
@@ -442,8 +407,20 @@ class QdrantService:
         with_payload: bool = True,
         score_threshold: Optional[float] = None
     ) -> List[Dict[str, Any]]:
+        # Check cache first
+        vec_hash = hashlib.sha256(np.array(query_vector).tobytes()).hexdigest()[:16]
+        filter_str = str(query_filter) if query_filter else ""
+        cache_key = self._search_cache._make_key(
+            "search", collection_name, vec_hash, limit, filter_str, score_threshold
+        )
+        cached = self._search_cache.get(cache_key)
+        if cached is not None:
+            logger.info("Search cache HIT for %s (key=%s)", collection_name, cache_key[:8])
+            return cached
+
         client = self._get_client(collection_name)
-        print(f" Qdrant search: collection={collection_name}, vector_dim={len(query_vector)}, limit={limit}")
+        logger.debug("Qdrant search: collection=%s, vector_dim=%d, limit=%d",
+                      collection_name, len(query_vector), limit)
 
         try:
             results = client.query_points(
@@ -454,8 +431,12 @@ class QdrantService:
                 with_payload=with_payload,
                 score_threshold=score_threshold
             )
-            print(f" Qdrant search returned {len(results.points)} results")
-            return [
+            # Record success for circuit breaker
+            if collection_name in ["public_science", "biomemory_experiments"]:
+                self._cloud_circuit.record_success()
+
+            logger.info("Qdrant search returned %d results from %s", len(results.points), collection_name)
+            formatted = [
                 {
                     "id": str(point.id),
                     "score": point.score,
@@ -463,10 +444,13 @@ class QdrantService:
                 }
                 for point in results.points
             ]
+            self._search_cache.put(cache_key, formatted)
+            return formatted
         except Exception as e:
-            print(f" Qdrant search error: {e}")
-            import traceback
-            traceback.print_exc()
+            # Record failure for circuit breaker
+            if collection_name in ["public_science", "biomemory_experiments"]:
+                self._cloud_circuit.record_failure()
+            logger.error("Qdrant search error on %s: %s", collection_name, e)
             return []
     async def hybrid_search(
         self,
@@ -478,6 +462,17 @@ class QdrantService:
         score_threshold: Optional[float] = None,
         fusion: Fusion = Fusion.RRF
     ) -> List[Dict[str, Any]]:
+        # Check cache
+        vec_hash = hashlib.sha256(np.array(query_vector).tobytes()).hexdigest()[:16]
+        filter_str = str(query_filter) if query_filter else ""
+        cache_key = self._search_cache._make_key(
+            "hybrid", collection_name, vec_hash, query_text, limit, filter_str
+        )
+        cached = self._search_cache.get(cache_key)
+        if cached is not None:
+            logger.info("Hybrid search cache HIT for %s", collection_name)
+            return cached
+
         client = self._get_client(collection_name)
         prefetch_queries = []
         if query_vector:
@@ -530,8 +525,8 @@ class QdrantService:
                 score_threshold=score_threshold,
                 with_payload=True
             )
-            print(f" Hybrid search returned {len(results.points)} results")
-            return [
+            logger.info("Hybrid search returned %s results", len(results.points))
+            formatted = [
                 {
                     "id": str(hit.id),
                     "score": hit.score,
@@ -539,10 +534,10 @@ class QdrantService:
                 }
                 for hit in results.points
             ]
+            self._search_cache.put(cache_key, formatted)
+            return formatted
         except Exception as e:
-            print(f" Hybrid search error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Hybrid search error: %s", e, exc_info=True)
 
             return await self.search(
                 collection_name=collection_name,
@@ -624,37 +619,6 @@ class QdrantService:
             }
             for point in results.points
         ]
-    async def search_with_grouping(
-        self,
-        collection_name: str,
-        query_vector: List[float],
-        group_by: str,
-        limit: int = 10,
-        group_size: int = 3,
-        query_filter: Optional[Filter] = None
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        client = self._get_client(collection_name)
-        results = client.query_points_groups(
-            collection_name=collection_name,
-            query=query_vector,
-            group_by=group_by,
-            limit=limit,
-            group_size=group_size,
-            query_filter=query_filter,
-            with_payload=True
-        )
-        grouped_results = {}
-        for group in results.groups:
-            group_name = group.hits[0].payload.get(group_by, "unknown") if group.hits else "unknown"
-            grouped_results[group_name] = [
-                {
-                    "id": str(point.id),
-                    "score": point.score,
-                    "payload": point.payload or {}
-                }
-                for point in group.hits
-            ]
-        return grouped_results
     async def search_with_ordering(
         self,
         collection_name: str,
@@ -787,34 +751,6 @@ class QdrantService:
             limit=limit,
             query_filter=combined_filter
         )
-    async def search_with_boosting(
-        self,
-        collection_name: str,
-        query_vector: List[float],
-        boost_factors: Dict[str, float],
-        limit: int = 10,
-        query_filter: Optional[Filter] = None
-    ) -> List[Dict[str, Any]]:
-        results = await self.search(
-            collection_name=collection_name,
-            query_vector=query_vector,
-            limit=limit * 2,
-            query_filter=query_filter
-        )
-        for result in results:
-            payload = result["payload"]
-            boost_score = 1.0
-            for field, factor in boost_factors.items():
-                if field in payload:
-                    field_value = payload[field]
-                    if isinstance(field_value, (int, float)):
-                        boost_score *= (1.0 + field_value * factor)
-                    elif isinstance(field_value, str):
-                        if any(keyword in field_value.lower() for keyword in ["novel", "breakthrough", "important"]):
-                            boost_score *= factor
-            result["score"] *= boost_score
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:limit]
     async def create_user_collection(
         self,
         user_id: str,
@@ -834,20 +770,26 @@ class QdrantService:
                 ),
                 optimizers_config=OptimizersConfigDiff(**self.optimizers_config)
             )
-            print(f"✓ Collection utilisateur '{collection_name}' créée")
+            logger.info("User collection '%s' created", collection_name)
             return collection_name
         except Exception as e:
-            print(f"ℹCollection '{collection_name}' existe déjà ou erreur: {e}")
+            logger.info("Collection '%s' already exists or error: %s", collection_name, e)
             return collection_name
     async def get_collection_stats(
         self,
         collection_name: str
     ) -> Dict[str, Any]:
+        cache_key = self._stats_cache._make_key("stats", collection_name)
+        cached = self._stats_cache.get(cache_key)
+        if cached is not None:
+            logger.info("Stats cache HIT for %s", collection_name)
+            return cached
+
         client = self._get_client(collection_name)
         try:
             info = client.get_collection(collection_name)
             count = await self.count_points(collection_name)
-            return {
+            result = {
                 "name": collection_name,
                 "vectors_count": info.vectors_count,
                 "points_count": count,
@@ -858,6 +800,8 @@ class QdrantService:
                     "quantization": info.config.quantization_config
                 }
             }
+            self._stats_cache.put(cache_key, result)
+            return result
         except Exception as e:
             return {"error": str(e)}
     def search_sync(
@@ -947,7 +891,7 @@ class QdrantService:
                 collections = client.get_collections()
                 return True
         except Exception as e:
-            print(f"Qdrant {instance} health check failed: {e}")
+            logger.error("Qdrant %s health check failed: %s", instance, e)
             return False
         return False
 
@@ -987,7 +931,7 @@ class QdrantService:
             collection_name=collection_name,
             points=point_structs
         )
-        print(f" Upsert with sparse vectors: {len(point_structs)} points")
+        logger.info("Upsert with sparse vectors: %s points", len(point_structs))
 
     def _generate_sparse_vector(self, text: str) -> SparseVector:
         """
@@ -1081,10 +1025,10 @@ class QdrantService:
                     }
                 ]
             )
-            print(f" Alias '{alias_name}' créé pour collection '{collection_name}'")
+            logger.info("Alias '%s' created for collection '%s'", alias_name, collection_name)
             return True
         except Exception as e:
-            print(f" Création alias échouée: {e}")
+            logger.error("Alias creation failed: %s", e)
             return False
 
     async def switch_collection_alias(
@@ -1113,10 +1057,10 @@ class QdrantService:
                     }
                 ]
             )
-            print(f" Alias '{alias_name}' basculé de '{old_collection}' vers '{new_collection}'")
+            logger.info("Alias '%s' switched from '%s' to '%s'", alias_name, old_collection, new_collection)
             return True
         except Exception as e:
-            print(f" Switch alias échoué: {e}")
+            logger.error("Switch alias failed: %s", e)
             return False
 
     async def create_snapshot(
@@ -1129,10 +1073,10 @@ class QdrantService:
         try:
             client = self._get_client(collection_name)
             snapshot_info = client.create_snapshot(collection_name=collection_name)
-            print(f" Snapshot créé: {snapshot_info.name}")
+            logger.info("Snapshot created: %s", snapshot_info.name)
             return snapshot_info.name
         except Exception as e:
-            print(f" Création snapshot échouée: {e}")
+            logger.error("Snapshot creation failed: %s", e)
             return None
 
     async def list_snapshots(
@@ -1154,7 +1098,7 @@ class QdrantService:
                 for s in snapshots
             ]
         except Exception as e:
-            print(f" Liste snapshots échouée: {e}")
+            logger.error("List snapshots failed: %s", e)
             return []
 
     async def restore_snapshot(
@@ -1171,10 +1115,10 @@ class QdrantService:
                 collection_name=collection_name,
                 location=snapshot_name
             )
-            print(f" Snapshot '{snapshot_name}' restauré pour '{collection_name}'")
+            logger.info("Snapshot '%s' restored for '%s'", snapshot_name, collection_name)
             return True
         except Exception as e:
-            print(f" Restauration snapshot échouée: {e}")
+            logger.error("Snapshot restoration failed: %s", e)
             return False
 
 
@@ -1197,10 +1141,10 @@ class QdrantService:
                 payload=payload,
                 points=[point_id]
             )
-            print(f" Payload mis à jour pour point {point_id}")
+            logger.info("Payload updated for point %s", point_id)
             return True
         except Exception as e:
-            print(f" Set payload échoué: {e}")
+            logger.error("Set payload failed: %s", e)
             return False
 
     async def overwrite_payload(
@@ -1219,10 +1163,10 @@ class QdrantService:
                 payload=payload,
                 points=[point_id]
             )
-            print(f" Payload remplacé pour point {point_id}")
+            logger.info("Payload replaced for point %s", point_id)
             return True
         except Exception as e:
-            print(f" Overwrite payload échoué: {e}")
+            logger.error("Overwrite payload failed: %s", e)
             return False
 
     async def delete_payload_keys(
@@ -1241,10 +1185,10 @@ class QdrantService:
                 keys=keys,
                 points=[point_id]
             )
-            print(f" Clés {keys} supprimées du payload pour point {point_id}")
+            logger.info("Keys %s deleted from payload for point %s", keys, point_id)
             return True
         except Exception as e:
-            print(f" Delete payload keys échoué: {e}")
+            logger.error("Delete payload keys failed: %s", e)
             return False
 
 
@@ -1280,7 +1224,7 @@ class QdrantService:
                 for point in sampled
             ]
         except Exception as e:
-            print(f" Random sample échoué: {e}")
+            logger.error("Random sample failed: %s", e)
             return []
 
     async def search_with_oversampling(
@@ -1324,6 +1268,12 @@ class QdrantService:
         """
         Comptage par facettes (pour filtres dans l'UI).
         """
+        cache_key = self._facets_cache._make_key("facets", collection_name, facet_field)
+        cached = self._facets_cache.get(cache_key)
+        if cached is not None:
+            logger.info("Facets cache HIT for %s.%s", collection_name, facet_field)
+            return cached
+
         try:
             all_points = await self.scroll(
                 collection_name=collection_name,
@@ -1338,9 +1288,11 @@ class QdrantService:
                     value = value.get("organism", "unknown")
                 facet_counts[str(value)] = facet_counts.get(str(value), 0) + 1
 
-            return dict(sorted(facet_counts.items(), key=lambda x: x[1], reverse=True))
+            result = dict(sorted(facet_counts.items(), key=lambda x: x[1], reverse=True))
+            self._facets_cache.put(cache_key, result)
+            return result
         except Exception as e:
-            print(f" Faceted count échoué: {e}")
+            logger.error("Faceted count failed: %s", e)
             return {}
     def build_metadata_filter(
         self,
@@ -1350,17 +1302,14 @@ class QdrantService:
             return None
         must_conditions = []
 
-
         if conditions.get("organism"):
             organism_value = conditions["organism"]
-
             must_conditions.append(
                 FieldCondition(
                     key="organism",
                     match=MatchText(text=organism_value)
                 )
             )
-
 
         if conditions.get("assay"):
             must_conditions.append(
@@ -1370,7 +1319,6 @@ class QdrantService:
                 )
             )
 
-
         if conditions.get("type"):
             must_conditions.append(
                 FieldCondition(
@@ -1378,7 +1326,6 @@ class QdrantService:
                     match=MatchValue(value=conditions["type"])
                 )
             )
-
 
         if conditions.get("source"):
             must_conditions.append(
@@ -1388,7 +1335,6 @@ class QdrantService:
                 )
             )
 
-
         if conditions.get("contact"):
             must_conditions.append(
                 FieldCondition(
@@ -1397,29 +1343,62 @@ class QdrantService:
                 )
             )
 
+        # Range filter for temperature (+/- 5 degrees tolerance)
+        if conditions.get("temperature") is not None:
+            try:
+                temp = float(conditions["temperature"])
+                tolerance = conditions.get("temperature_tolerance", 5.0)
+                must_conditions.append(
+                    FieldCondition(
+                        key="temperature",
+                        range=Range(gte=str(temp - tolerance), lte=str(temp + tolerance))
+                    )
+                )
+            except (ValueError, TypeError):
+                pass
 
+        # Range filter for pH (+/- 1.0 tolerance)
+        if conditions.get("ph") is not None:
+            try:
+                ph = float(conditions["ph"])
+                tolerance = conditions.get("ph_tolerance", 1.0)
+                must_conditions.append(
+                    FieldCondition(
+                        key="ph",
+                        range=Range(gte=str(ph - tolerance), lte=str(ph + tolerance))
+                    )
+                )
+            except (ValueError, TypeError):
+                pass
 
+        # Success filter
+        if conditions.get("success_only") is True:
+            must_conditions.append(
+                FieldCondition(
+                    key="success",
+                    match=MatchValue(value=True)
+                )
+            )
 
         if not must_conditions:
             return None
         return Filter(must=must_conditions)
     def _get_client(self, collection_name: str) -> QdrantClient:
-        print(f" _get_client: collection={collection_name}, cloud={self.cloud_client is not None}, private={self.private_client is not None}")
-
+        # Circuit breaker check for cloud
         if collection_name in ["public_science", "biomemory_experiments"]:
-            if self.cloud_client:
-                print(f" Using CLOUD client for {collection_name}")
+            if self.cloud_client and not self._cloud_circuit.is_open:
+                logger.debug("Using CLOUD client for %s", collection_name)
                 return self.cloud_client
+            if self._cloud_circuit.is_open:
+                logger.warning("Circuit breaker OPEN - falling back for %s", collection_name)
             if self.private_client:
-                print(f" Fallback to PRIVATE client for {collection_name}")
+                logger.debug("Fallback to PRIVATE client for %s", collection_name)
                 return self.private_client
         if collection_name == "private_experiments" or collection_name.startswith("private_experiments_"):
             if self.private_client:
-                print(f" Using PRIVATE client for {collection_name}")
                 return self.private_client
-
             if self.cloud_client:
-                print(f" Fallback to CLOUD client for {collection_name}")
+                logger.debug("Fallback to CLOUD client for %s", collection_name)
                 return self.cloud_client
         raise ValueError(f"No Qdrant client available for collection {collection_name}")
     async def search_temporal_advanced(
@@ -1540,6 +1519,46 @@ class QdrantService:
             })
         boosted_results.sort(key=lambda x: x["boosted_score"], reverse=True)
         return boosted_results[:limit]
+
+    async def record_feedback(
+        self,
+        experiment_id: str,
+        feedback: str,
+        query_text: str = "",
+        collection_name: str = "public_science"
+    ) -> Dict[str, Any]:
+        """Record user feedback (like/dislike) on a search result."""
+        try:
+            client = self._get_client(collection_name)
+            # Store feedback as payload update
+            client.set_payload(
+                collection_name=collection_name,
+                payload={
+                    "user_feedback": feedback,
+                    "feedback_query": query_text,
+                    "feedback_at": datetime.now().isoformat()
+                },
+                points=[experiment_id]
+            )
+            logger.info("Feedback recorded: %s for %s", feedback, experiment_id)
+            return {"status": "success", "experiment_id": experiment_id, "feedback": feedback}
+        except Exception as e:
+            logger.error("Feedback recording failed: %s", e)
+            return {"status": "error", "error": str(e)}
+
+    @property
+    def cache_stats(self) -> Dict[str, Any]:
+        return {
+            "search_cache": self._search_cache.stats,
+            "stats_cache": self._stats_cache.stats,
+            "facets_cache": self._facets_cache.stats,
+            "scroll_cache": self._scroll_cache.stats,
+        }
+
+    @property
+    def circuit_breaker_state(self) -> str:
+        return self._cloud_circuit.state
+
 _qdrant_service = None
 def get_qdrant_service() -> QdrantService:
     global _qdrant_service

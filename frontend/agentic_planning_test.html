@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BioMemory - Agentic Planning</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            padding: 40px;
+        }
+        
+        .section {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .input-section h2,
+        .results-section h2 {
+            color: #333;
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        label {
+            color: #555;
+            font-weight: 600;
+            font-size: 0.95em;
+        }
+        
+        textarea {
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            resize: vertical;
+            min-height: 120px;
+            transition: border-color 0.3s;
+        }
+        
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        button {
+            padding: 12px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .loader {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .results {
+            display: none;
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .result-section {
+            margin-bottom: 20px;
+        }
+        
+        .result-section h3 {
+            color: #667eea;
+            font-size: 1.1em;
+            margin-bottom: 10px;
+        }
+        
+        .parsed-info {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+        
+        .parsed-info strong {
+            color: #333;
+        }
+        
+        .recommendation {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 0.9em;
+            line-height: 1.6;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .qdrant-insights {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+        
+        .insight-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .insight-item:last-child {
+            border-bottom: none;
+        }
+        
+        .error {
+            color: #d32f2f;
+            background: #ffebee;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #d32f2f;
+            display: none;
+        }
+        
+        .error.show {
+            display: block;
+        }
+        
+        .examples {
+            background: #f0f4ff;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 0.9em;
+        }
+        
+        .examples h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .example-btn {
+            background: white;
+            color: #667eea;
+            border: 1px solid #667eea;
+            padding: 8px 12px;
+            margin: 5px 0;
+            width: 100%;
+            text-align: left;
+            cursor: pointer;
+            font-size: 0.85em;
+        }
+        
+        .example-btn:hover {
+            background: #f0f4ff;
+        }
+        
+        @media (max-width: 768px) {
+            .content {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 1.8em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>BioMemory Agentic Planning</h1>
+            <p>Planifiez votre expérience basé sur 9 types de recherches Qdrant</p>
+        </div>
+        
+        <div class="content">
+            <div class="section input-section">
+                <h2>Votre Requête</h2>
+                
+                <div class="form-group">
+                    <label for="query">Décrivez votre expérience:</label>
+                    <textarea id="query" placeholder="Ex: Je vais faire une PCR sur E.coli à 37°C pendant 30 minutes pour amplifier le gène X..."></textarea>
+                </div>
+                
+                <button onclick="submitQuery()" id="submitBtn">Analyser avec Qdrant</button>
+                
+                <div class="loader" id="loader"></div>
+                
+                <div class="error" id="error"></div>
+                
+                <div class="examples">
+                    <h4>Exemples:</h4>
+                    <button class="example-btn" onclick="useExample('Je vais faire une PCR sur E.coli à 37°C pendant 30 minutes')">
+                        PCR E.coli
+                    </button>
+                    <button class="example-btn" onclick="useExample('Je veux étudier la mutagenèse chez Arabidopsis thaliana en utilisant EMS')">
+                        Mutagenèse Arabidopsis
+                    </button>
+                    <button class="example-btn" onclick="useExample('Je fais une extraction d\'ADN de tissus de levure avec du phénol-chloroforme')">
+                        Extraction ADN levure
+                    </button>
+                </div>
+            </div>
+            
+            <div class="section results-section">
+                <h2>Résultats</h2>
+                
+                <div class="results" id="results">
+                    <div class="result-section">
+                        <h3>Expérience Analysée</h3>
+                        <div class="parsed-info" id="parsedInfo"></div>
+                    </div>
+                    
+                    <div class="result-section">
+                        <h3>Aperçu Qdrant</h3>
+                        <div class="qdrant-insights" id="qdrantInsights"></div>
+                    </div>
+                    
+                    <div class="result-section">
+                        <h3>Recommandations</h3>
+                        <div class="recommendation" id="recommendations"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        async function submitQuery() {
+            const query = document.getElementById('query').value.trim();
+            const error = document.getElementById('error');
+            
+            error.classList.remove('show');
+            
+            if (!query) {
+                error.textContent = 'Veuillez entrer une requête';
+                error.classList.add('show');
+                return;
+            }
+            
+            const btn = document.getElementById('submitBtn');
+            const loader = document.getElementById('loader');
+            
+            btn.disabled = true;
+            loader.style.display = 'block';
+            
+            try {
+                const response = await fetch('/api/search/agentic-planning', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+                    },
+                    body: JSON.stringify({ query, collection: 'public_science' })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Erreur ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                displayResults(data);
+                
+            } catch (err) {
+                error.textContent = `Erreur: ${err.message}`;
+                error.classList.add('show');
+                console.error(err);
+            } finally {
+                btn.disabled = false;
+                loader.style.display = 'none';
+            }
+        }
+        
+        function displayResults(data) {
+            const parsedInfo = data.parsed_experiment || {};
+            const qdrantInsights = data.qdrant_insights || {};
+            const recommendations = data.recommendations || {};
+            
+            document.getElementById('parsedInfo').innerHTML = `
+                <strong>Type:</strong> ${parsedInfo.type_experiment || 'N/A'}<br>
+                <strong>Organisme:</strong> ${parsedInfo.organism || 'N/A'}<br>
+                <strong>Conditions:</strong> ${parsedInfo.conditions || 'N/A'}<br>
+                <strong>Objectif:</strong> ${parsedInfo.goal || 'N/A'}<br>
+                <strong>Défis:</strong> ${parsedInfo.concerns || 'N/A'}
+            `;
+            
+            const vectorCount = (qdrantInsights.vector_search || []).length;
+            const hybridCount = (qdrantInsights.hybrid_search || []).length;
+            const totalExps = qdrantInsights.total_experiments || {};
+            
+            document.getElementById('qdrantInsights').innerHTML = `
+                <div class="insight-item">
+                    <span>Recherche Vectorielle</span>
+                    <strong>${vectorCount} résultats</strong>
+                </div>
+                <div class="insight-item">
+                    <span>Recherche Hybride (Vector + Keyword)</span>
+                    <strong>${hybridCount} résultats</strong>
+                </div>
+                <div class="insight-item">
+                    <span>Total Expériences en BD</span>
+                    <strong>${totalExps.total_experiments || 'N/A'}</strong>
+                </div>
+                <div class="insight-item">
+                    <span>Sources Qdrant Utilisées</span>
+                    <strong>${recommendations.qdrant_sources_used || 9}/9</strong>
+                </div>
+                <div class="insight-item">
+                    <span>Temps Pipeline</span>
+                    <strong>${data.pipeline_time_ms || 'N/A'}ms</strong>
+                </div>
+            `;
+            
+            document.getElementById('recommendations').textContent = 
+                recommendations.full_response || 'Aucune recommandation';
+            
+            document.getElementById('results').classList.add('show');
+        }
+        
+        function useExample(text) {
+            document.getElementById('query').value = text;
+            submitQuery();
+        }
+    </script>
+</body>
+</html>

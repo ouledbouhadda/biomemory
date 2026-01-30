@@ -8,13 +8,16 @@ import ExperimentUpload from './ExperimentUpload';
 import SimilarExperiments from './SimilarExperiments';
 import DesignSuggestions from './DesignSuggestions';
 import ReproducibilityRisk from './ReproducibilityRisk';
+import AgenticPlanning from './AgenticPlanning';
+import DnaHelix from './DnaHelix';
 import { experimentsAPI, healthAPI } from '../services/api';
-import { Database, Search, Upload, Beaker, Activity } from 'lucide-react';
+import { Database, Search, Upload, Beaker, Activity, Zap } from 'lucide-react';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('search');
   const [searchResults, setSearchResults] = useState(null);
   const [designResults, setDesignResults] = useState(null);
+  const [agenticResults, setAgenticResults] = useState(null);
   const [stats, setStats] = useState(null);
   const [health, setHealth] = useState(null);
 
@@ -55,13 +58,18 @@ export default function Dashboard() {
     loadStats();
   };
 
+  const handleAgenticResults = (results) => {
+    setAgenticResults(results);
+    setActiveTab('agentic-results');
+  };
+
   return (
     <div style={styles.container}>
       {/* Header */}
       <header style={styles.header}>
         <div style={styles.headerContent}>
           <div style={styles.logo}>
-            <Database size={32} color="#fff" />
+            <DnaHelix width={140} height={50} />
             <h1 style={styles.title}>BIOMEMORY</h1>
           </div>
           <div style={styles.healthStatus}>
@@ -115,6 +123,13 @@ export default function Dashboard() {
           Search
         </button>
         <button
+          style={activeTab === 'agentic' ? styles.tabActive : styles.tab}
+          onClick={() => setActiveTab('agentic')}
+        >
+          <Zap size={18} />
+          AI Planning
+        </button>
+        <button
           style={activeTab === 'upload' ? styles.tabActive : styles.tab}
           onClick={() => setActiveTab('upload')}
         >
@@ -139,6 +154,15 @@ export default function Dashboard() {
             Design ({designResults.variants?.length || 0})
           </button>
         )}
+        {agenticResults && (
+          <button
+            style={activeTab === 'agentic-results' ? styles.tabActive : styles.tab}
+            onClick={() => setActiveTab('agentic-results')}
+          >
+            <Zap size={18} />
+            Planning Results
+          </button>
+        )}
       </div>
 
       {/* Main Content */}
@@ -148,6 +172,10 @@ export default function Dashboard() {
             onSearchResults={handleSearchResults}
             onDesignResults={handleDesignResults}
           />
+        )}
+
+        {activeTab === 'agentic' && (
+          <AgenticPlanning onResults={handleAgenticResults} />
         )}
 
         {activeTab === 'upload' && (
@@ -179,6 +207,74 @@ export default function Dashboard() {
                 metadata={designResults.generation_metadata}
               />
             </div>
+          </div>
+        )}
+
+        {activeTab === 'agentic-results' && agenticResults && (
+          <div style={styles.resultsContainer}>
+            <h2 style={styles.resultsTitle}>Agentic Planning Results</h2>
+
+            {/* Status */}
+            {agenticResults.status && (
+              <div style={styles.agSection}>
+                <span style={{
+                  ...styles.agStatusBadge,
+                  background: agenticResults.status === 'success' ? '#d1fae5' : '#fee2e2',
+                  color: agenticResults.status === 'success' ? '#065f46' : '#991b1b',
+                }}>
+                  {agenticResults.status === 'success' ? 'Success' : agenticResults.status}
+                </span>
+              </div>
+            )}
+
+            {/* Parsed Experiment */}
+            {agenticResults.parsed_experiment && (
+              <div style={styles.agSection}>
+                <h3 style={styles.agSectionTitle}>Parsed Experiment</h3>
+                <div style={styles.agFieldGrid}>
+                  {Object.entries(agenticResults.parsed_experiment).map(([key, value]) => (
+                    value && (
+                      <div key={key} style={styles.agField}>
+                        <div style={styles.agFieldLabel}>{key.replace(/_/g, ' ')}</div>
+                        <div style={styles.agFieldValue}>{String(value)}</div>
+                      </div>
+                    )
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Recommendations */}
+            {agenticResults.recommendations && (
+              <div style={styles.agSection}>
+                <h3 style={styles.agSectionTitle}>AI Recommendations</h3>
+                <p style={styles.agRecommendation}>{agenticResults.recommendations}</p>
+              </div>
+            )}
+
+            {/* Qdrant Insights */}
+            {agenticResults.qdrant_insights && (
+              <div style={styles.agSection}>
+                <h3 style={styles.agSectionTitle}>Qdrant Insights</h3>
+                <div style={styles.agFieldGrid}>
+                  {Object.entries(agenticResults.qdrant_insights)
+                    .filter(([, v]) => {
+                      if (v == null) return false;
+                      if (Array.isArray(v) && v.length === 0) return false;
+                      if (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0) return false;
+                      return true;
+                    })
+                    .map(([key, value]) => (
+                      <div key={key} style={styles.agField}>
+                        <div style={styles.agFieldLabel}>{key.replace(/_/g, ' ')}</div>
+                        <div style={styles.agFieldValue}>
+                          {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -312,5 +408,92 @@ const styles = {
   },
   resultsSidebar: {
     minHeight: '400px',
+  },
+  resultsContainer: {
+    minHeight: '400px',
+  },
+  resultsTitle: {
+    fontSize: '1.5rem',
+    fontWeight: '600',
+    color: '#0a1131',
+    marginBottom: '1rem',
+  },
+  resultsContent: {
+    overflow: 'auto',
+    maxHeight: '600px',
+  },
+  pre: {
+    background: '#f5f5f5',
+    padding: '1rem',
+    borderRadius: '8px',
+    fontSize: '0.85rem',
+    color: '#333',
+    overflow: 'auto',
+    margin: 0,
+  },
+  agSection: {
+    background: '#f9fafb',
+    border: '1px solid #e5e7eb',
+    borderRadius: '12px',
+    padding: '1.5rem',
+    marginBottom: '1.5rem',
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '0.75rem',
+    alignItems: 'flex-start',
+  },
+  agSectionTitle: {
+    width: '100%',
+    fontSize: '1.15rem',
+    fontWeight: '600',
+    color: '#0a1131',
+    marginBottom: '0.5rem',
+  },
+  agStatusBadge: {
+    padding: '0.4rem 1rem',
+    borderRadius: '20px',
+    fontWeight: '600',
+    fontSize: '0.95rem',
+  },
+  agPipelineTime: {
+    padding: '0.4rem 1rem',
+    borderRadius: '20px',
+    background: '#f0fdf4',
+    color: '#059669',
+    fontWeight: '500',
+    fontSize: '0.95rem',
+  },
+  agFieldGrid: {
+    width: '100%',
+    display: 'grid',
+    gridTemplateColumns: '1fr',
+    gap: '0.75rem',
+  },
+  agField: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem',
+  },
+  agFieldLabel: {
+    fontSize: '0.85rem',
+    fontWeight: '600',
+    color: '#6b7280',
+    textTransform: 'capitalize',
+  },
+  agFieldValue: {
+    fontSize: '1.05rem',
+    color: '#1f2937',
+    lineHeight: '1.6',
+    wordBreak: 'break-word',
+    whiteSpace: 'pre-wrap',
+  },
+  agRecommendation: {
+    width: '100%',
+    fontSize: '1.05rem',
+    color: '#1f2937',
+    lineHeight: '1.7',
+    wordBreak: 'break-word',
+    whiteSpace: 'pre-wrap',
+    margin: 0,
   },
 };

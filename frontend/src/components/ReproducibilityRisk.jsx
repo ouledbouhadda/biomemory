@@ -110,6 +110,18 @@ export default function ReproducibilityRisk({ risk, metadata }) {
                 <div style={styles.metadataValue}>{metadata.model}</div>
               </div>
             )}
+            {metadata.risk_level && (
+              <div style={styles.metadataItem}>
+                <div style={styles.metadataLabel}>Risk Level:</div>
+                <div style={styles.metadataValue}>{metadata.risk_level}</div>
+              </div>
+            )}
+            {metadata.total_analyzed !== undefined && (
+              <div style={styles.metadataItem}>
+                <div style={styles.metadataLabel}>Experiments Analyzed:</div>
+                <div style={styles.metadataValue}>{metadata.total_analyzed}</div>
+              </div>
+            )}
             {metadata.context_experiments !== undefined && (
               <div style={styles.metadataItem}>
                 <div style={styles.metadataLabel}>Context Size:</div>
@@ -124,25 +136,32 @@ export default function ReproducibilityRisk({ risk, metadata }) {
       <div style={styles.recommendations}>
         <h4 style={styles.recommendationsTitle}>Recommendations</h4>
         <ul style={styles.recommendationsList}>
-          {riskLevel === 'low' && (
+          {metadata?.recommendations && metadata.recommendations.length > 0 ? (
+            metadata.recommendations.map((rec, i) => (
+              <li key={i}>{riskLevel === 'low' ? '✓' : '!'} {rec}</li>
+            ))
+          ) : (
             <>
-              <li>✓ Proceed with confidence</li>
-              <li>✓ Standard protocol controls should suffice</li>
-            </>
-          )}
-          {riskLevel === 'medium' && (
-            <>
-              <li>⚠ Include additional controls</li>
-              <li>⚠ Document conditions precisely</li>
-              <li>⚠ Consider replicates</li>
-            </>
-          )}
-          {riskLevel === 'high' && (
-            <>
-              <li>⚠ Review similar failed experiments</li>
-              <li>⚠ Validate critical parameters</li>
-              <li>⚠ Consider pilot experiments</li>
-              <li>⚠ Use AI design variants</li>
+              {riskLevel === 'low' && (
+                <>
+                  <li>✓ Proceed with confidence</li>
+                  <li>✓ Standard protocol controls should suffice</li>
+                </>
+              )}
+              {riskLevel === 'medium' && (
+                <>
+                  <li>! Include additional controls</li>
+                  <li>! Document conditions precisely</li>
+                  <li>! Consider replicates</li>
+                </>
+              )}
+              {riskLevel === 'high' && (
+                <>
+                  <li>! Review similar failed experiments</li>
+                  <li>! Validate critical parameters</li>
+                  <li>! Consider pilot experiments</li>
+                </>
+              )}
             </>
           )}
         </ul>

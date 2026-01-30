@@ -60,6 +60,8 @@ class IngestionAgent:
         return metadata
     def _prepare_qdrant_payload(self, cleaned_data: Dict[str, Any],
                                enriched_metadata: Dict[str, Any]) -> Dict[str, Any]:
+        import logging
+        logger = logging.getLogger("ingestion_agent")
         payload = dict(cleaned_data)
         payload.update(enriched_metadata)
         payload['searchable_text'] = f"{payload.get('text', '')} {payload.get('notes', '')}"
@@ -67,6 +69,12 @@ class IngestionAgent:
         payload['indexed_at'] = datetime.now().isoformat()
         payload['data_quality_score'] = enriched_metadata.get('confidence_score', 0.5)
         payload['completeness_score'] = enriched_metadata.get('modality_count', 0) / 4.0
+        # image_base64 doit être optionnel dans le payload Qdrant
+        if not payload.get('image_base64'):
+            logger.info("image_base64 absent du payload Qdrant.")
+            payload.pop('image_base64', None)
+        else:
+            logger.info(f"image_base64 présent dans payload Qdrant, taille={len(payload['image_base64'])}")
         return payload
     def _validate_experiment_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         errors = []
@@ -145,10 +153,15 @@ class IngestionAgent:
             standardized['validation_warnings'].append("pH outside valid range")
         return standardized
     def _process_image_data(self, image_base64: str) -> str:
+        import logging
+        logger = logging.getLogger("ingestion_agent")
         if not image_base64:
+            logger.info("No image_base64 provided.")
             return ""
         if not image_base64.startswith('data:image/'):
+            logger.info(f"image_base64 does not start with data:image/: {image_base64[:30]}")
             return ""
+        logger.info(f"Image accepted, length={len(image_base64)}")
         return image_base64
     def _extract_keywords(self, text: str) -> List[str]:
         if not text:

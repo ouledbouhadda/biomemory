@@ -10,6 +10,9 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true
       }
-    }
-  }
+    },
+    // SPA fallback: serve index.html for /login, /register, /dashboard
+    historyApiFallback: true
+  },
+  appType: 'spa'
 })
