@@ -49,18 +49,19 @@ Qdrant joue un rôle central dans BioMemory en tant que base de données vectori
 - **biomemory_users** : Gestion des utilisateurs et authentification
 - **private_experiments** : Expériences utilisateur privées avec accès contrôlé
 
-#### Fonctionnalités clés
-- **Recherche de similarité** : Recherche cosinus dans l'espace vectoriel 768D
+#### Fonctionnalités clés de Qadrant 
+- **Recherche de similarité** : Recherche cosinus dans l'espace vectoriel 
 - **Filtrage avancé** : Conditions sur domaine, type d'expérience, date, confiance
 - **Mise à jour en temps réel** : Indexation continue des nouvelles expériences
 - **Recherche hybride** : Combinaison de recherche vectorielle et textuelle
 - **Recherche multimodale** : Gestion des embeddings texte + séquence + conditions
 
+
 #### Flux de données dans Qdrant
 1. **Ingestion** : Les expériences sont nettoyées, chunkées et embeddées
 2. **Indexation** : Vecteurs stockés avec métadonnées enrichies
-3. **Recherche** : Requêtes transformées en vecteurs et comparées
-4. **Récupération** : Résultats rerankés et enrichis avec preuves
+3. **Recherche** : Requêtes transformées en vecteurs et comparées(HNSW)
+4. **Récupération** : Résultats rerankés
 5. **Génération** : Contextes utilisés pour RAG et conception
 
 ### Scrapers et ingestion de données
