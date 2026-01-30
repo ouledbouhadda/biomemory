@@ -4,12 +4,12 @@ BioMemory est une plateforme d'intelligence artificielle avancée conçue pour r
 
 ## Vue d'ensemble de l'architecture
 
-BioMemory est organisé autour de plusieurs composants clés qui travaillent ensemble pour fournir une expérience de recherche complète :
+BioMemory est organisé autour de plusieurs composants clés qui travaillent ensemble pour fournir une expérience de recherche multimodales:
 
 ### Backend (FastAPI)
 Le backend fournit une API REST robuste avec les fonctionnalités suivantes :
 
-#### Agents d'IA
+#### multi-agents pipeline-based
 - **OrchestratorAgent** : Coordonne l'exécution des pipelines de recherche et de conception
 - **IngestionAgent** : Nettoie et normalise les données expérimentales entrantes
 - **ChunkingAgent** : Divise les textes longs en segments significatifs pour l'indexation
